@@ -1,0 +1,237 @@
+/* Native business charts: quiet grid, readable scale, restrained motion. */
+.management-plot {
+  --chart-gap: clamp(5px, 1.2vw, 12px);
+  isolation: isolate;
+  gap: var(--chart-gap);
+  min-width: calc(
+    var(--chart-column-count) * 44px + (var(--chart-column-count) - 1) * var(--chart-gap)
+  );
+}
+.management-chart:not(.rv2-trend) {
+  position: relative;
+  min-width: 0;
+}
+.management-chart-scroll {
+  min-width: 0;
+  overflow-x: auto;
+  padding: 4px;
+  scrollbar-width: thin;
+}
+.management-plot .management-chart-column {
+  min-width: 44px;
+  min-height: 44px;
+}
+.management-chart > .management-chart-tooltip:not([hidden]) {
+  top: 12px;
+  bottom: auto;
+  opacity: 1;
+  transform: translateX(-50%);
+  max-width: min(240px, calc(100% - 16px));
+}
+.management-chart-readout,
+.management-chart-scroll-hint {
+  grid-column: 1 / -1;
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--mt);
+}
+.management-chart-readout {
+  min-height: 42px;
+}
+.management-chart-scroll-hint {
+  margin-top: 0;
+}
+.management-bars,
+#financeView .management-bars {
+  background: none;
+  border-bottom-color: var(--ln);
+}
+.management-plot::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 24px;
+  z-index: -1;
+  background: repeating-linear-gradient(to bottom, var(--ln) 0 1px, transparent 1px 50%);
+  opacity: 0.65;
+  pointer-events: none;
+}
+.experience-app .page-view.active:not(#financeView) .management-bars i {
+  animation: none;
+}
+.management-bars i,
+#financeView .management-bars i {
+  max-width: 22px;
+  border-radius: 6px 6px 2px 2px;
+  opacity: 0.85;
+  transform-origin: center bottom;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity 160ms ease;
+}
+.management-chart-column:hover .management-bars i,
+.management-chart-column:focus-visible .management-bars i {
+  opacity: 1;
+}
+.management-axis,
+#financeView .management-axis,
+#financeView .management-chart-column em,
+.management-chart-column em,
+.management-chart-tooltip {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.management-chart-column:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 3px;
+}
+.management-sparkline .chart-spark-curve {
+  fill: none;
+  stroke: var(--chart-1);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.management-sparkline.out .chart-spark-curve {
+  stroke: var(--chart-5);
+}
+.management-plot .management-chart-column[data-chart-active="true"] {
+  background: var(--surface-secondary);
+  box-shadow: inset 0 -3px var(--brand-primary);
+}
+.rv2-stacked > [data-report-bar] {
+  flex-shrink: 0;
+  transform-origin: left center;
+}
+#reportsView .rv2-point {
+  -webkit-tap-highlight-color: transparent;
+}
+.rv2-trend .rv2-line {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.rv2-trend .rv2-guide {
+  opacity: 0.5;
+  pointer-events: none;
+}
+#reportsView .rv2-trend .rv2-point circle,
+#reportsView .rv2-trend .rv2-secondary-point {
+  transition:
+    fill 140ms ease,
+    stroke-width 140ms ease;
+}
+#reportsView .rv2-trend .rv2-point:is(:hover, :focus-visible, [data-active="true"]) circle {
+  r: 5px;
+  fill: var(--brand-primary);
+  stroke-width: 3;
+}
+#reportsView .rv2-trend .rv2-point:focus-visible circle {
+  stroke: var(--tx);
+}
+#reportsView .rv2-trend .rv2-secondary-point[data-active="true"] {
+  r: 5px;
+  fill: var(--brand-accent);
+}
+#reportsView .rv2-trend .rv2-chart-tooltip {
+  z-index: 6;
+  width: max-content;
+  max-width: calc(100% - 16px);
+  margin: 0;
+  bottom: 42px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+#reportsView .rv2-trend .rv2-chart-readout {
+  min-height: 42px;
+  font-size: 13px;
+}
+.view-demo-setting,
+.view-demo-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.view-demo-setting p {
+  max-width: 72ch;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--mt);
+  margin-top: 6px;
+}
+#viewDemoToggle {
+  position: relative;
+  min-width: 168px;
+  min-height: 44px;
+  padding-left: 62px;
+}
+#viewDemoToggle::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: calc(50% - 11px);
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--text-muted);
+  transition: background-color var(--motion-fast);
+}
+#viewDemoToggle::after {
+  content: "";
+  position: absolute;
+  left: 17px;
+  top: calc(50% - 8px);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform var(--motion-fast);
+}
+#viewDemoToggle[aria-checked="true"]::before {
+  background: var(--brand-primary);
+}
+#viewDemoToggle[aria-checked="true"]::after {
+  transform: translateX(16px);
+}
+@media (prefers-reduced-motion: reduce) {
+  #viewDemoToggle::before,
+  #viewDemoToggle::after {
+    transition: none;
+  }
+}
+.view-demo-notice {
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-left: 3px solid var(--brand-accent);
+  background: var(--sf);
+  color: var(--tx);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.view-demo-notice[hidden] {
+  display: none;
+}
+@media (max-width: 600px) {
+  .view-demo-setting,
+  .view-demo-notice {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .view-demo-notice .management-button {
+    align-self: flex-start;
+    min-height: 44px;
+  }
+  .management-chart-column em,
+  #financeView .management-chart-column em {
+    font-size: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .management-bars i,
+  #reportsView .rv2-trend .rv2-point circle,
+  #reportsView .rv2-trend .rv2-secondary-point {
+    transition: none;
+  }
+}
