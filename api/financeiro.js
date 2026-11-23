@@ -32,7 +32,7 @@ function validDate(value, name) {
 
 function businessId(req) {
   const value = String(req.query.business_id || req.body?.business_id || "").trim();
-  if (!/^[a-f0-9-]{16,64}$/i.test(value)) {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(value)) {
     const error = new Error("Informe um business_id válido.");
     error.statusCode = 422;
     throw error;
