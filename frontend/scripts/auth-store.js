@@ -1,0 +1,274 @@
+/* Real accounts are opt-in; the public Pages demo keeps its local flow. */
+const SocialMEIAuth = (() => {
+  const commonPasswords = new Set([
+    "12345678",
+    "123456789",
+    "1234567890",
+    "01234567",
+    "87654321",
+    "password",
+    "password1",
+    "password123",
+    "qwertyui",
+    "qwerty123",
+    "senha123",
+    "senha1234",
+    "admin123",
+    "admin1234",
+    "iloveyou",
+    "abc12345",
+  ]);
+  function passwordPolicy(value) {
+    const length = Array.from(value).length;
+    const error =
+      length < 8 || length > 128
+        ? "Use uma senha de 8 a 128 caracteres."
+        : commonPasswords.has(value.toLowerCase()) || new Set(value).size === 1
+          ? "Esta senha é muito comum. Escolha uma senha menos previsível."
+          : "";
+    return {
+      error,
+      warning:
+        !error && length < 12
+          ? "Senha fraca: prefira uma frase mais longa e difícil de adivinhar."
+          : "",
+    };
+  }
+  const config = SOCIALMEI_CONFIG.auth;
+  const remote = !!config && config.mode !== "local";
+  let current = null,
+    problem = "",
+    base = "";
+  const scopeKey = "socialmei-auth-browser-scope";
+  const pending = new Set();
+  let revision = 0;
+  let transitioning = false;
+  const currentScope = () => (current ? `${current.usuario.id}:${current.negocio.id}` : "");
+  function invalidate() {
+    transitioning = true;
+    revision++;
+    current = null;
+    for (const controller of pending) controller.abort();
+    pending.clear();
+  }
+  const archivePrefix = "socialmei-account-state-";
+  const internal = (key) => key === scopeKey || key.startsWith(archivePrefix);
+  const appKey = (key) => /^socialmei[-_]/i.test(key) && !internal(key);
+  function bindBrowser(identity) {
+    const next = identity ? `${identity.usuario.id}:${identity.negocio.id}` : "";
+    const previous = localStorage.getItem(scopeKey) || "";
+    if (next === previous) return false;
+    const saved = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (appKey(key)) saved[key] = localStorage.getItem(key);
+    }
+    // Preserve local work before clearing a different account's presentation state.
+    const previousArchive = archivePrefix + (previous || "legacy");
+    if (previous || localStorage.getItem(previousArchive) === null)
+      localStorage.setItem(previousArchive, JSON.stringify(saved));
+    const restored = next ? JSON.parse(localStorage.getItem(archivePrefix + next) || "{}") : {};
+    for (const key of Object.keys(saved)) localStorage.removeItem(key);
+    for (const [key, value] of Object.entries(restored)) {
+      if (appKey(key) && typeof value === "string") localStorage.setItem(key, value);
+    }
+    localStorage.setItem(scopeKey, next);
+    for (const key of Object.keys(sessionStorage)) {
+      if (/^socialmei[-_]/i.test(key) && !/^socialmei-business-create:\d+:\d+$/.test(key))
+        sessionStorage.removeItem(key);
+    }
+    return true;
+  }
+  function identity(value) {
+    if (
+      !value ||
+      !Number.isSafeInteger(value.usuario?.id) ||
+      !Number.isSafeInteger(value.negocio?.id) ||
+      typeof value.usuario.email !== "string" ||
+      typeof value.negocio.slug !== "string" ||
+      !/^[a-f0-9]{64}$/.test(value.csrf_token)
+    )
+      throw new Error("Resposta de autenticação inválida.");
+    return value;
+  }
+  async function request(path, method = "GET", data) {
+    if (!base) throw new Error(problem || "Autenticação não configurada.");
+    if (transitioning) throw new Error("Sua sessão mudou. Atualize antes de continuar.");
+    const scope = currentScope();
+    if (scope && localStorage.getItem(scopeKey) !== scope) {
+      invalidate();
+      location.reload();
+      throw new Error("O negócio mudou em outra aba. Atualize antes de continuar.");
+    }
+    const expectedRevision = revision;
+    const controller = new AbortController();
+    pending.add(controller);
+    const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch(base + path, {
+        method,
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          "X-SocialMEI-Client": "browser",
+          ...headers(),
+          ...(data ? { "Content-Type": "application/json" } : {}),
+        },
+        body: data ? JSON.stringify(data) : undefined,
+      }).catch(() => {
+        if (expectedRevision !== revision)
+          throw new Error("Sua sessão mudou. Atualize antes de continuar.");
+        const reading = ["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+        const timeout = controller.signal.aborted;
+        const error = new Error(
+          reading
+            ? timeout
+              ? "O servidor demorou para responder. Tente atualizar os dados."
+              : "Não foi possível conectar ao servidor. Confira sua conexão e tente atualizar."
+            : "Não foi possível confirmar a operação. Confira os dados salvos antes de repetir.",
+        );
+        error.code = reading
+          ? timeout
+            ? "request_timeout"
+            : "connection_failed"
+          : "operation_unconfirmed";
+        throw error;
+      });
+      const body = response.status === 204 ? null : await response.json().catch(() => null);
+      if (expectedRevision !== revision)
+        throw new Error("Sua sessão mudou. Atualize antes de continuar.");
+      if (!response.ok) {
+        const error = new Error(
+          typeof body?.detail === "string"
+            ? body.detail
+            : response.status === 401
+              ? "Sua sessão expirou. Entre novamente."
+              : response.status === 403
+                ? "Você não tem permissão para realizar esta ação."
+                : response.status === 409
+                  ? "Os dados mudaram. Atualize antes de continuar."
+                  : response.status >= 500
+                    ? "O servidor está temporariamente indisponível. Confira a operação antes de tentar novamente."
+                    : "Não foi possível concluir. Confira os dados e tente novamente.",
+        );
+        error.status = response.status;
+        throw error;
+      }
+      return body;
+    } finally {
+      pending.delete(controller);
+      clearTimeout(timer);
+    }
+  }
+  function headers() {
+    return remote && current
+      ? {
+          "X-SocialMEI-CSRF": current.csrf_token,
+          "X-SocialMEI-Identity": `${current.usuario.id}:${current.negocio.id}`,
+        }
+      : {};
+  }
+  async function signIn(path, data) {
+    const value = identity(await request(path, "POST", data));
+    invalidate();
+    bindBrowser(value);
+    location.reload();
+    return value;
+  }
+  async function bootstrap() {
+    // entrada.js keeps this token only in memory after erasing the fragment.
+    const recoveryEntry =
+      location.pathname === "/frontend/entrada.html" &&
+      /^#\/recuperar\/[A-Za-z0-9_-]{43}$/.test(location.hash);
+    try {
+      if (config.mode !== "remote") throw new Error("Configuração de autenticação inválida.");
+      const url = new URL(config.apiBaseUrl, location.href);
+      if (
+        url.origin !== location.origin ||
+        url.pathname.replace(/\/$/, "") !== "/api/v1" ||
+        url.search ||
+        url.hash ||
+        url.username ||
+        url.password
+      )
+        throw new Error("A autenticação deve usar a API deste mesmo site.");
+      base = url.href.replace(/\/$/, "");
+      const session = await request("/auth/session");
+      const value = session === null ? null : identity(session);
+      if (bindBrowser(value) && !recoveryEntry) {
+        location.reload();
+        return null;
+      }
+      current = value;
+      return current;
+    } catch (error) {
+      problem = error.message;
+      return null;
+    }
+  }
+  const ready = remote ? bootstrap() : Promise.resolve(null);
+  if (remote && window.addEventListener) {
+    window.addEventListener("storage", (event) => {
+      if (
+        (event.key === scopeKey || event.key === null) &&
+        current &&
+        localStorage.getItem(scopeKey) !== currentScope()
+      ) {
+        invalidate();
+        location.reload();
+      }
+    });
+  }
+  return {
+    remote,
+    ready,
+    headers,
+    request,
+    passwordPolicy,
+    internalStorageKey: internal,
+    get current() {
+      return current;
+    },
+    get problem() {
+      return problem;
+    },
+    login: (data) => signIn("/auth/login", data),
+    register: (data) => signIn("/auth/register", data),
+    async switchWorkspace(workspaceId) {
+      const value = identity(
+        await request("/auth/workspaces/switch", "POST", {
+          workspace_id: workspaceId,
+        }),
+      );
+      invalidate();
+      bindBrowser(value);
+      location.reload();
+    },
+    async saveProfile(data) {
+      current = identity(await request("/auth/profile", "PATCH", data));
+      return current;
+    },
+    async logout(destination) {
+      if (destination !== undefined && destination !== "/frontend/socialmei-app.html")
+        throw new Error("Destino de saída inválido.");
+      try {
+        await request("/auth/logout", "POST", {});
+      } catch (error) {
+        if (error.status !== 401) throw error;
+      }
+      invalidate();
+      try {
+        bindBrowser(null);
+      } catch (_) {
+        // A revoked session must leave the app even if local storage cannot archive drafts.
+        // Existing local work remains in place for the next verified bootstrap to handle.
+        problem = "Você saiu. Confira o espaço do navegador antes de entrar novamente.";
+      }
+      if (destination) location.replace(destination);
+      else location.reload();
+    },
+  };
+})();
+window.SocialMEIAuth = SocialMEIAuth;
