@@ -1,0 +1,10 @@
+{
+  "name": "socialmei-finance-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": { "dev": "vercel dev", "check": "node --check api/financeiro.js && node --check lib/db.js" },
+  "dependencies": { "@libsql/client": "^0.15.15" },
+  "devDependencies": { "vercel": "^49.1.2" }
+}
