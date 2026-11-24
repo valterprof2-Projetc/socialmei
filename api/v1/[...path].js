@@ -317,6 +317,15 @@ async function getWorkspaceProfile(session) {
 function sendProfileMissing() {
   fail(404, "Perfil do negócio ainda não foi criado.", "profile_missing");
 }
+function validDate(value, label) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" || !/^\\d{4}-\\d{2}-\\d{2}$/.test(value))
+    fail(422, `${label} deve estar no formato AAAA-MM-DD.`);
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0,10) !== value)
+    fail(422, `${label} inválida.`);
+  return value;
+}
 function numeric(value, label, { min = 0, nullable = false } = {}) {
   if (value == null && nullable) return null;
   const n = Number(value);
