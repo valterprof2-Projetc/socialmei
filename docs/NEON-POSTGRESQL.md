@@ -43,8 +43,10 @@ Não coloque nenhuma dessas variáveis em arquivos do frontend, no Git ou em men
 - `POST /api/v1/auth/sessions/revoke-others`
 - `GET /api/v1/workspace-profile`
 - `PATCH /api/v1/workspace-profile`
+- `GET /api/v1/clientes`, `POST /api/v1/clientes`, `PATCH /api/v1/clientes/:id`
+- `GET /api/v1/produtos`, `POST /api/v1/produtos`, `PATCH /api/v1/produtos/:id`
 
-A recuperação de senha, verificação de e-mail e os módulos de dados (clientes, produtos, vendas, financeiro e agenda) ainda não estão concluídos nesta camada. Portanto, esta entrega é uma base técnica para Preview e não deve ser considerada pronta para produção ou para abertura pública de contas.
+A recuperação de senha e verificação de e-mail ainda não estão concluídas. As rotas de leitura/criação/edição de clientes e produtos já foram adicionadas com isolamento por workspace e controle otimista de versão. Vendas, financeiro e agenda ainda estão pendentes. Portanto, esta entrega é uma base técnica para Preview e não deve ser considerada pronta para produção ou para abertura pública de contas.
 
 ## Teste de conectividade
 
@@ -58,7 +60,7 @@ A rota responde sem devolver host, usuário, senha ou mensagem interna do Postgr
 ## Próximas etapas de implementação
 
 1. Testes automatizados da autenticação, cookie, CSRF, limites de tentativas e isolamento entre workspaces.
-2. Clientes e catálogo, incluindo controle otimista de versão.
+2. Concluir testes de isolamento e concorrência nas rotas de clientes e catálogo.
 3. Vendas e movimentação de estoque transacional.
 4. Contas a pagar/receber e livro-caixa, mantendo os dois conceitos separados.
 5. Agenda, disponibilidade, recursos e operações idempotentes.
