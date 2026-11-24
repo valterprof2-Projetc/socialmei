@@ -280,6 +280,7 @@ async function login(req, res) {
   const password = input.senha;
   if (!EMAIL_RE.test(email) || typeof password !== "string" || password.length > 128)
     fail(401, "E-mail ou senha inválidos.", "invalid_credentials");
+  const attemptKey = await consumeLoginAttempt(email, req);
   const result = await query(
     `SELECT u.id, c.senha_hash, c.ativo
        FROM socialmei.users u
@@ -291,6 +292,7 @@ async function login(req, res) {
     fail(401, "E-mail ou senha inválidos.", "invalid_credentials");
   const valid = await argon2.verify(result.rows[0].senha_hash, password).catch(() => false);
   if (!valid) fail(401, "E-mail ou senha inválidos.", "invalid_credentials");
+  await query("DELETE FROM socialmei.auth_limites WHERE chave=$1", [attemptKey]);
   const userId = Number(result.rows[0].id);
   const memberships = await query(
     `SELECT workspace_id FROM socialmei.workspace_members
