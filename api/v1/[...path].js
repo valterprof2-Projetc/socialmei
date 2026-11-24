@@ -253,6 +253,25 @@ async function register(req, res) {
   const identity = await loadSessionIdentity(sha256(result.token));
   return send(res, 201, publicIdentity(identity, result.token));
 }
+async function consumeLoginAttempt(email, req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const ip = forwarded || String(req.headers["x-real-ip"] || "unknown");
+  const key = sha256(`login:${email}:${ip}`);
+  const result = await query(
+    `INSERT INTO socialmei.auth_limites (chave,inicio,tentativas)
+     VALUES ($1,now(),1)
+     ON CONFLICT (chave) DO UPDATE SET
+       inicio=CASE WHEN socialmei.auth_limites.inicio < now()-interval '15 minutes'
+                   THEN now() ELSE socialmei.auth_limites.inicio END,
+       tentativas=CASE WHEN socialmei.auth_limites.inicio < now()-interval '15 minutes'
+                       THEN 1 ELSE socialmei.auth_limites.tentativas+1 END
+     RETURNING tentativas`,
+    [key],
+  );
+  if (Number(result.rows[0]?.tentativas || 0) > 10)
+    fail(429, "Muitas tentativas. Aguarde alguns minutos antes de tentar novamente.", "rate_limited");
+  return key;
+}
 async function login(req, res) {
   const input = bodyOf(req);
   const email = String(input.email || "").trim().toLowerCase();
