@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS socialmei.agenda_reminder_history (
     ON DELETE CASCADE
 );
 
+INSERT INTO socialmei.agenda_reminder_history
+  (workspace_id,reminder_id,revision,scheduled_for,status)
+SELECT workspace_id,id,revision,scheduled_for,status
+  FROM socialmei.agenda_reminders
+ON CONFLICT (workspace_id,reminder_id,revision) DO NOTHING;
+
 CREATE INDEX IF NOT EXISTS agenda_appointments_resource_time_idx
   ON socialmei.agenda_appointments (workspace_id, resource_id, scheduled_for)
   WHERE status = 'pending';
