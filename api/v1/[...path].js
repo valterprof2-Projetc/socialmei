@@ -317,12 +317,212 @@ async function getWorkspaceProfile(session) {
 function sendProfileMissing() {
   fail(404, "Perfil do negócio ainda não foi criado.", "profile_missing");
 }
+function numeric(value, label, { min = 0, nullable = false } = {}) {
+  if (value == null && nullable) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min) fail(422, `${label} inválido.`);
+  return n;
+}
+function version(value) {
+  if (!Number.isSafeInteger(value) || value < 1) fail(422, "expected_version inválida.");
+  return value;
+}
+function customerRow(row) {
+  return {
+    ...row,
+    id: Number(row.id),
+    versao: Number(row.versao),
+    total: Number(row.total || 0),
+    pendente: Number(row.pendente || 0),
+  };
+}
+function productRow(row) {
+  return {
+    ...row,
+    id: Number(row.id),
+    versao: Number(row.versao),
+    preco: Number(row.preco),
+    custo: Number(row.custo || 0),
+    estoque: row.estoque == null ? null : Number(row.estoque),
+    minimo: row.minimo == null ? null : Number(row.minimo),
+    duracao_minutos: row.duracao_minutos == null ? null : Number(row.duracao_minutos),
+  };
+}
+const CUSTOMER_COLUMNS = "id,nome,telefone,email,status,observacao,tags,total,pendente,versao,criado_em,atualizado_em";
+const PRODUCT_COLUMNS = "id,nome,tipo,preco,custo,estoque,minimo,status,versao,criado_em,atualizado_em,duracao_minutos,categoria,descricao";
+
+async function customers(req, res, session, route, method) {
+  if (route === "/clientes" && method === "GET") {
+    const r = await query(
+      `SELECT ${CUSTOMER_COLUMNS} FROM socialmei.crm_clientes
+        WHERE workspace_id=$1 ORDER BY lower(nome),id LIMIT 500`,
+      [session.workspace_id],
+    );
+    return send(res, 200, r.rows.map(customerRow));
+  }
+  if (route === "/clientes" && method === "POST") {
+    const input = bodyOf(req);
+    const nome = String(input.nome || "").trim();
+    const email = input.email == null ? null : String(input.email).trim().toLowerCase();
+    const telefone = input.telefone == null ? null : String(input.telefone).trim();
+    const observacao = input.observacao == null ? "" : String(input.observacao).trim();
+    if (nome.length < 2 || nome.length > 160) fail(422, "Informe o nome do cliente.");
+    if (email && (email.length > 255 || !EMAIL_RE.test(email))) fail(422, "E-mail do cliente inválido.");
+    if (telefone && telefone.length > 40) fail(422, "Telefone do cliente inválido.");
+    if (observacao.length > 10000) fail(422, "Observação muito longa.");
+    const r = await query(
+      `INSERT INTO socialmei.crm_clientes
+        (workspace_id,nome,email,telefone,observacao)
+       VALUES ($1,$2,$3,$4,$5) RETURNING ${CUSTOMER_COLUMNS}`,
+      [session.workspace_id,nome,email || null,telefone || null,observacao],
+    );
+    return send(res, 201, customerRow(r.rows[0]));
+  }
+  const match = /^\/clientes\/([1-9]\\d*)$/.exec(route);
+  if (match && method === "PATCH") {
+    const id = safeId(match[1], "Cliente");
+    const input = bodyOf(req);
+    const expected = version(input.expected_version);
+    const fields = [];
+    const values = [id,session.workspace_id,expected];
+    const add = (column, value) => { values.push(value); fields.push(`${column}=${values.length}`); };
+    if (input.nome !== undefined) {
+      const value = String(input.nome).trim();
+      if (value.length < 2 || value.length > 160) fail(422, "Informe o nome do cliente.");
+      add("nome",value);
+    }
+    if (input.email !== undefined) {
+      const value = input.email == null ? null : String(input.email).trim().toLowerCase();
+      if (value && (value.length > 255 || !EMAIL_RE.test(value))) fail(422, "E-mail do cliente inválido.");
+      add("email",value || null);
+    }
+    if (input.telefone !== undefined) {
+      const value = input.telefone == null ? null : String(input.telefone).trim();
+      if (value && value.length > 40) fail(422, "Telefone do cliente inválido.");
+      add("telefone",value || null);
+    }
+    if (input.observacao !== undefined) {
+      const value = input.observacao == null ? "" : String(input.observacao);
+      if (value.length > 10000) fail(422, "Observação muito longa.");
+      add("observacao",value);
+    }
+    if (!fields.length) fail(422, "Nenhum campo para atualizar.");
+    const r = await query(
+      `UPDATE socialmei.crm_clientes SET ${fields.join(",")},versao=versao+1,atualizado_em=now()
+        WHERE id=$1 AND workspace_id=$2 AND versao=$3
+        RETURNING ${CUSTOMER_COLUMNS}`,
+      values,
+    );
+    if (!r.rows.length) fail(409, "O cliente foi alterado ou não existe neste negócio. Atualize a lista.", "revision_conflict");
+    return send(res, 200, customerRow(r.rows[0]));
+  }
+  return null;
+}
+
+async function products(req, res, session, route, method) {
+  if (route === "/produtos" && method === "GET") {
+    const r = await query(
+      `SELECT ${PRODUCT_COLUMNS} FROM socialmei.crm_produtos
+        WHERE workspace_id=$1 ORDER BY lower(nome),id LIMIT 500`,
+      [session.workspace_id],
+    );
+    return send(res, 200, r.rows.map(productRow));
+  }
+  if (route === "/produtos" && method === "POST") {
+    const input = bodyOf(req);
+    const nome = String(input.nome || "").trim();
+    const tipo = input.tipo;
+    if (nome.length < 2 || nome.length > 160) fail(422, "Informe o nome do produto ou serviço.");
+    if (!["Produto","Serviço"].includes(tipo)) fail(422, "Tipo de cadastro inválido.");
+    const preco = numeric(input.preco,"Preço");
+    const custo = numeric(input.custo ?? 0,"Custo");
+    const status = input.status || "Ativo";
+    if (!["Ativo","Inativo"].includes(status)) fail(422, "Status inválido.");
+    const categoria = String(input.categoria || "").trim();
+    const descricao = String(input.descricao || "").trim();
+    if (categoria.length > 80 || descricao.length > 2000) fail(422, "Categoria ou descrição muito longa.");
+    let estoque = null, minimo = null, duracao = null;
+    if (tipo === "Produto") {
+      estoque = numeric(input.estoque,"Estoque");
+      minimo = numeric(input.minimo,"Estoque mínimo");
+      if (!Number.isSafeInteger(estoque) || !Number.isSafeInteger(minimo)) fail(422, "Estoque e estoque mínimo devem ser inteiros.");
+    } else if (input.duracao_minutos != null) {
+      duracao = numeric(input.duracao_minutos,"Duração");
+      if (!Number.isInteger(duracao) || duracao < 1 || duracao > 1440) fail(422, "Duração deve ser de 1 a 1440 minutos.");
+    }
+    const r = await query(
+      `INSERT INTO socialmei.crm_produtos
+        (workspace_id,nome,tipo,preco,custo,estoque,minimo,status,duracao_minutos,categoria,descricao)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${PRODUCT_COLUMNS}`,
+      [session.workspace_id,nome,tipo,preco,custo,estoque,minimo,status,duracao,categoria,descricao],
+    );
+    return send(res, 201, productRow(r.rows[0]));
+  }
+  const match = /^\/produtos\/([1-9]\\d*)$/.exec(route);
+  if (match && method === "PATCH") {
+    const id = safeId(match[1],"Produto");
+    const input = bodyOf(req);
+    const expected = version(input.expected_version);
+    const current = await query(
+      `SELECT ${PRODUCT_COLUMNS} FROM socialmei.crm_produtos
+        WHERE id=$1 AND workspace_id=$2 LIMIT 1`,
+      [id,session.workspace_id],
+    );
+    if (!current.rows.length) fail(404, "Produto não encontrado neste negócio.");
+    if (Number(current.rows[0].versao) !== expected) fail(409, "O produto foi alterado. Atualize antes de salvar.", "revision_conflict");
+    const old = current.rows[0];
+    const next = {
+      nome: input.nome === undefined ? old.nome : String(input.nome).trim(),
+      tipo: input.tipo === undefined ? old.tipo : input.tipo,
+      preco: input.preco === undefined ? Number(old.preco) : numeric(input.preco,"Preço"),
+      custo: input.custo === undefined ? Number(old.custo) : numeric(input.custo,"Custo"),
+      status: input.status === undefined ? old.status : input.status,
+      categoria: input.categoria === undefined ? old.categoria : String(input.categoria).trim(),
+      descricao: input.descricao === undefined ? old.descricao : String(input.descricao).trim(),
+      estoque: input.estoque === undefined ? old.estoque : input.estoque,
+      minimo: input.minimo === undefined ? old.minimo : input.minimo,
+      duracao_minutos: input.duracao_minutos === undefined ? old.duracao_minutos : input.duracao_minutos,
+    };
+    if (next.nome.length < 2 || next.nome.length > 160) fail(422, "Nome inválido.");
+    if (!["Produto","Serviço"].includes(next.tipo)) fail(422, "Tipo inválido.");
+    if (!["Ativo","Inativo"].includes(next.status)) fail(422, "Status inválido.");
+    if (next.categoria.length > 80 || next.descricao.length > 2000) fail(422, "Categoria ou descrição muito longa.");
+    if (next.tipo === "Produto") {
+      next.estoque = numeric(next.estoque,"Estoque");
+      next.minimo = numeric(next.minimo,"Estoque mínimo");
+      if (!Number.isSafeInteger(next.estoque) || !Number.isSafeInteger(next.minimo)) fail(422, "Estoque e estoque mínimo devem ser inteiros.");
+      next.duracao_minutos = null;
+    } else {
+      next.estoque = null;
+      next.minimo = null;
+      next.duracao_minutos = next.duracao_minutos == null ? null : numeric(next.duracao_minutos,"Duração");
+      if (next.duracao_minutos != null && (!Number.isInteger(next.duracao_minutos) || next.duracao_minutos < 1 || next.duracao_minutos > 1440)) fail(422, "Duração deve ser de 1 a 1440 minutos.");
+    }
+    const r = await query(
+      `UPDATE socialmei.crm_produtos
+          SET nome=$4,tipo=$5,preco=$6,custo=$7,estoque=$8,minimo=$9,status=$10,
+              duracao_minutos=$11,categoria=$12,descricao=$13,versao=versao+1,atualizado_em=now()
+        WHERE id=$1 AND workspace_id=$2 AND versao=$3
+        RETURNING ${PRODUCT_COLUMNS}`,
+      [id,session.workspace_id,expected,next.nome,next.tipo,next.preco,next.custo,next.estoque,next.minimo,next.status,next.duracao_minutos,next.categoria,next.descricao],
+    );
+    if (!r.rows.length) fail(409, "O produto foi alterado. Atualize antes de salvar.", "revision_conflict");
+    return send(res, 200, productRow(r.rows[0]));
+  }
+  return null;
+}
+
 async function handle(req, res) {
   const method = String(req.method || "GET").toUpperCase();
   if (method === "OPTIONS") return res.status(204).end();
   sameOrigin(req);
   const route = routeOf(req);
   const input = bodyOf(req);
+
+  const customerResponse = await customers(req, res, session, route, method);
+  if (customerResponse !== null) return customerResponse;
+  const productResponse = await products(req, res, session, route, method);
+  if (productResponse !== null) return productResponse;
 
   if (route === "/auth/registration" && method === "GET") return registration(req, res);
   if (route === "/auth/session" && method === "GET") {
