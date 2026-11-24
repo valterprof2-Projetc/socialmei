@@ -744,6 +744,344 @@ async function finance(req, res, session, route, method) {
   return null;
 }
 
+
+const AGENDA_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const APPOINTMENT_COLUMNS = "workspace_id,id,cliente_id,servico_id,resource_id,client_name,service_name,duration_minutes,price,scheduled_for,ends_at,notes,status,revision,creation_fingerprint,created_at,updated_at";
+const REMINDER_COLUMNS = "workspace_id,id,title,scheduled_for,notes,cliente_id,status,revision,creation_fingerprint,created_at,updated_at";
+function agendaUuid(value, label = "Identificador") {
+  if (typeof value !== "string" || !AGENDA_UUID_RE.test(value)) fail(422, label + " deve ser um UUID válido.");
+  return value.toLowerCase();
+}
+function agendaInstant(value, label = "Data e horário") {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value))
+    fail(422, label + " deve conter data, horário e fuso (ISO 8601).");
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) fail(422, label + " inválido.");
+  return d.toISOString();
+}
+function agendaDateQuery(value, label) {
+  if (value == null || value === "") return null;
+  return validDate(String(value), label);
+}
+function appointmentRow(row) {
+  return {
+    ...row,
+    id: String(row.id),
+    cliente_id: row.cliente_id == null ? null : Number(row.cliente_id),
+    servico_id: row.servico_id == null ? null : Number(row.servico_id),
+    duration_minutes: Number(row.duration_minutes),
+    price: Number(row.price),
+    revision: Number(row.revision),
+  };
+}
+function reminderRow(row) {
+  return {
+    ...row,
+    id: String(row.id),
+    cliente_id: row.cliente_id == null ? null : Number(row.cliente_id),
+    revision: Number(row.revision),
+  };
+}
+function resourceRow(row) {
+  return { ...row, id: String(row.id), revision: Number(row.revision), ativo: Boolean(row.ativo) };
+}
+async function lockAgendaResource(client, workspaceId, resourceId) {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", ["agenda:" + workspaceId + ":" + resourceId]);
+}
+async function hasAppointmentConflict(client, workspaceId, resourceId, start, end, excludeId = null) {
+  const result = await client.query(
+    \`SELECT 1 FROM socialmei.agenda_appointments
+      WHERE workspace_id=$1 AND resource_id=$2 AND status='pending'
+        AND scheduled_for < $4::timestamptz AND ends_at > $3::timestamptz
+        AND ($5::uuid IS NULL OR id <> $5::uuid)
+      LIMIT 1\`,
+    [workspaceId, resourceId, start, end, excludeId],
+  );
+  return result.rows.length > 0;
+}
+async function agendaResources(req, res, session, route, method) {
+  if (route === "/agenda/resources" && method === "GET") {
+    const result = await query(
+      "SELECT workspace_id,id,nome,ativo,revision,created_at,updated_at FROM socialmei.agenda_resources WHERE workspace_id=$1 ORDER BY lower(nome),id",
+      [session.workspace_id],
+    );
+    return send(res, 200, { items: result.rows.map(resourceRow) });
+  }
+  if (route === "/agenda/resources" && method === "POST") {
+    const input = bodyOf(req);
+    const id = agendaUuid(input.operation_id, "operation_id");
+    const nome = String(input.nome || "").trim();
+    if (!nome || nome.length > 160) fail(422, "Informe um nome de até 160 caracteres.");
+    const fingerprint = sha256(JSON.stringify({ nome }));
+    const result = await withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", ["agenda-resource-create:" + session.workspace_id + ":" + id]);
+      const previous = await client.query(
+        "SELECT * FROM socialmei.agenda_resources WHERE workspace_id=$1 AND id=$2",
+        [session.workspace_id,id],
+      );
+      if (previous.rows.length) {
+        if (previous.rows[0].creation_fingerprint.trim() !== fingerprint)
+          fail(409, "Este identificador já foi usado para outro recurso.", "operation_conflict");
+        return resourceRow(previous.rows[0]);
+      }
+      const created = await client.query(
+        "INSERT INTO socialmei.agenda_resources (workspace_id,id,nome,creation_fingerprint) VALUES ($1,$2,$3,$4) RETURNING *",
+        [session.workspace_id,id,nome,fingerprint],
+      );
+      return resourceRow(created.rows[0]);
+    });
+    return send(res, 201, result);
+  }
+  const prefix = "/agenda/resources/";
+  if (route.startsWith(prefix) && method === "PATCH") {
+    const id = agendaUuid(route.slice(prefix.length), "Recurso");
+    const input = bodyOf(req);
+    const expected = version(input.expected_revision);
+    const nome = input.nome == null ? null : String(input.nome).trim();
+    if (nome !== null && (!nome || nome.length > 160)) fail(422, "Informe um nome de até 160 caracteres.");
+    if (input.ativo !== undefined && typeof input.ativo !== "boolean") fail(422, "Status do recurso inválido.");
+    const result = await query(
+      \`UPDATE socialmei.agenda_resources
+          SET nome=COALESCE($4,nome),ativo=COALESCE($5,ativo),revision=revision+1,updated_at=now()
+        WHERE workspace_id=$1 AND id=$2 AND revision=$3
+        RETURNING workspace_id,id,nome,ativo,revision,created_at,updated_at\`,
+      [session.workspace_id,id,expected,nome,input.ativo === undefined ? null : input.ativo],
+    );
+    if (!result.rows.length) fail(409, "O recurso foi alterado ou não existe. Atualize a lista.", "revision_conflict");
+    return send(res, 200, resourceRow(result.rows[0]));
+  }
+  return null;
+}
+async function agendaAvailability(req, res, session, route, method) {
+  if (route !== "/agenda/availability" || method !== "GET") return null;
+  const resourceId = agendaUuid(req.query?.resource_id, "Recurso");
+  const serviceId = safeId(req.query?.servico_id, "Serviço");
+  const start = agendaInstant(req.query?.scheduled_for);
+  const service = await query(
+    "SELECT duracao_minutos FROM socialmei.crm_produtos WHERE workspace_id=$1 AND id=$2 AND tipo='Serviço' AND status='Ativo'",
+    [session.workspace_id,serviceId],
+  );
+  if (!service.rows.length || !service.rows[0].duracao_minutos)
+    fail(404, "Serviço ativo com duração não encontrado neste negócio.");
+  const resource = await query(
+    "SELECT 1 FROM socialmei.agenda_resources WHERE workspace_id=$1 AND id=$2 AND ativo=true",
+    [session.workspace_id,resourceId],
+  );
+  if (!resource.rows.length) fail(404, "Recurso ativo não encontrado neste negócio.");
+  const end = new Date(new Date(start).getTime() + Number(service.rows[0].duracao_minutos) * 60000).toISOString();
+  const conflict = await query(
+    \`SELECT 1 FROM socialmei.agenda_appointments
+      WHERE workspace_id=$1 AND resource_id=$2 AND status='pending'
+        AND scheduled_for < $4::timestamptz AND ends_at > $3::timestamptz LIMIT 1\`,
+    [session.workspace_id,resourceId,start,end],
+  );
+  return send(res, 200, { available: conflict.rows.length === 0, ends_at: end });
+}
+async function agendaAppointments(req, res, session, route, method) {
+  if (route === "/agenda/appointments" && method === "GET") {
+    const from = agendaDateQuery(req.query?.from_date, "Data inicial");
+    const to = agendaDateQuery(req.query?.to_date, "Data final");
+    if (from && to && from > to) fail(422, "O período da agenda está invertido.");
+    const includeCancelled = String(req.query?.include_cancelled || "") === "true";
+    const result = await query(
+      \`SELECT \${APPOINTMENT_COLUMNS} FROM socialmei.agenda_appointments
+        WHERE workspace_id=$1
+          AND ($2::date IS NULL OR scheduled_for >= $2::date::timestamptz)
+          AND ($3::date IS NULL OR scheduled_for < ($3::date + 1)::timestamptz)
+          AND ($4::boolean OR status <> 'cancelled')
+        ORDER BY scheduled_for,id LIMIT 501\`,
+      [session.workspace_id,from,to,includeCancelled],
+    );
+    return send(res, 200, { items: result.rows.slice(0,500).map(appointmentRow), truncated: result.rows.length > 500 });
+  }
+  if (route === "/agenda/appointments" && method === "POST") {
+    const input = bodyOf(req);
+    const id = agendaUuid(input.operation_id, "operation_id");
+    const clienteId = safeId(input.cliente_id, "Cliente");
+    const serviceId = safeId(input.servico_id, "Serviço");
+    const resourceId = agendaUuid(input.resource_id, "Recurso");
+    const start = agendaInstant(input.scheduled_for);
+    const notes = String(input.notes || "").trim();
+    if (notes.length > 1000) fail(422, "As observações devem ter até 1000 caracteres.");
+    const fingerprint = sha256(JSON.stringify({ clienteId,serviceId,resourceId,start,notes }));
+    const created = await withTransaction(async (client) => {
+      await lockAgendaResource(client,session.workspace_id,resourceId);
+      const previous = await client.query(
+        "SELECT * FROM socialmei.agenda_appointments WHERE workspace_id=$1 AND id=$2",
+        [session.workspace_id,id],
+      );
+      if (previous.rows.length) {
+        if (previous.rows[0].creation_fingerprint.trim() !== fingerprint)
+          fail(409, "Este identificador já foi usado para outro agendamento.", "operation_conflict");
+        return appointmentRow(previous.rows[0]);
+      }
+      const resource = await client.query(
+        "SELECT id FROM socialmei.agenda_resources WHERE workspace_id=$1 AND id=$2 AND ativo=true FOR SHARE",
+        [session.workspace_id,resourceId],
+      );
+      if (!resource.rows.length) fail(404, "Recurso ativo não encontrado neste negócio.");
+      const service = await client.query(
+        "SELECT id,nome,preco,duracao_minutos FROM socialmei.crm_produtos WHERE workspace_id=$1 AND id=$2 AND tipo='Serviço' AND status='Ativo' FOR SHARE",
+        [session.workspace_id,serviceId],
+      );
+      if (!service.rows.length || !service.rows[0].duracao_minutos)
+        fail(404, "Serviço ativo com duração não encontrado neste negócio.");
+      const customer = await client.query(
+        "SELECT nome FROM socialmei.crm_clientes WHERE workspace_id=$1 AND id=$2",
+        [session.workspace_id,clienteId],
+      );
+      if (!customer.rows.length) fail(404, "Cliente não encontrado neste negócio.");
+      const duration = Number(service.rows[0].duracao_minutos);
+      const end = new Date(new Date(start).getTime() + duration * 60000).toISOString();
+      if (await hasAppointmentConflict(client,session.workspace_id,resourceId,start,end))
+        fail(409, "Horário ocupado para este recurso. Escolha outro horário.", "schedule_conflict");
+      const result = await client.query(
+        \`INSERT INTO socialmei.agenda_appointments
+          (workspace_id,id,cliente_id,servico_id,resource_id,client_name,service_name,duration_minutes,price,scheduled_for,ends_at,notes,creation_fingerprint)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING \${APPOINTMENT_COLUMNS}\`,
+        [session.workspace_id,id,clienteId,serviceId,resourceId,customer.rows[0].nome,service.rows[0].nome,duration,Number(service.rows[0].preco),start,end,notes,fingerprint],
+      );
+      const row = result.rows[0];
+      await client.query(
+        \`INSERT INTO socialmei.agenda_appointment_history
+          (workspace_id,appointment_id,revision,scheduled_for,ends_at,status)
+         VALUES ($1,$2,$3,$4,$5,$6)\`,
+        [session.workspace_id,id,row.revision,row.scheduled_for,row.ends_at,row.status],
+      );
+      return appointmentRow(row);
+    });
+    return send(res, 201, created);
+  }
+  const historyPrefix = "/agenda/appointments/";
+  if (route.startsWith(historyPrefix) && route.endsWith("/history") && method === "GET") {
+    const id = agendaUuid(route.slice(historyPrefix.length,-"/history".length), "Agendamento");
+    const result = await query(
+      \`SELECT revision,scheduled_for,ends_at,status,recorded_at
+         FROM socialmei.agenda_appointment_history
+        WHERE workspace_id=$1 AND appointment_id=$2 ORDER BY revision\`,
+      [session.workspace_id,id],
+    );
+    return send(res, 200, { items: result.rows.map((row) => ({ ...row, revision: Number(row.revision) })) });
+  }
+  const prefix = "/agenda/appointments/";
+  if (route.startsWith(prefix) && method === "PATCH") {
+    const id = agendaUuid(route.slice(prefix.length), "Agendamento");
+    const input = bodyOf(req);
+    const expected = version(input.expected_revision);
+    const status = input.status;
+    const newStart = input.scheduled_for == null ? null : agendaInstant(input.scheduled_for);
+    if (status !== undefined && !["done","cancelled"].includes(status))
+      fail(422, "Situação de agendamento inválida.");
+    if ((status === undefined) === (newStart === null))
+      fail(422, "Informe uma nova data e horário ou uma situação.");
+    const result = await withTransaction(async (client) => {
+      const current = await client.query(
+        \`SELECT * FROM socialmei.agenda_appointments
+          WHERE workspace_id=$1 AND id=$2 FOR UPDATE\`,
+        [session.workspace_id,id],
+      );
+      if (!current.rows.length) fail(404, "Agendamento não encontrado neste negócio.");
+      const row = current.rows[0];
+      if (Number(row.revision) !== expected) fail(409, "O agendamento foi alterado. Atualize a agenda.", "revision_conflict");
+      if (row.status !== "pending") fail(409, "Somente agendamentos pendentes podem ser alterados.");
+      let start = row.scheduled_for, end = row.ends_at, nextStatus = status || row.status;
+      if (newStart) {
+        await lockAgendaResource(client,session.workspace_id,String(row.resource_id));
+        start = newStart;
+        end = new Date(new Date(start).getTime() + Number(row.duration_minutes) * 60000).toISOString();
+        if (await hasAppointmentConflict(client,session.workspace_id,String(row.resource_id),start,end,id))
+          fail(409, "Horário ocupado para este recurso. Escolha outro horário.", "schedule_conflict");
+      }
+      const updated = await client.query(
+        \`UPDATE socialmei.agenda_appointments
+            SET scheduled_for=$4,ends_at=$5,status=$6,revision=revision+1,updated_at=now()
+          WHERE workspace_id=$1 AND id=$2 AND revision=$3
+          RETURNING \${APPOINTMENT_COLUMNS}\`,
+        [session.workspace_id,id,expected,start,end,nextStatus],
+      );
+      if (!updated.rows.length) fail(409, "O agendamento foi alterado. Atualize a agenda.", "revision_conflict");
+      const saved = updated.rows[0];
+      await client.query(
+        \`INSERT INTO socialmei.agenda_appointment_history
+          (workspace_id,appointment_id,revision,scheduled_for,ends_at,status)
+         VALUES ($1,$2,$3,$4,$5,$6)\`,
+        [session.workspace_id,id,saved.revision,saved.scheduled_for,saved.ends_at,saved.status],
+      );
+      return appointmentRow(saved);
+    });
+    return send(res, 200, result);
+  }
+  return null;
+}
+async function agendaReminders(req, res, session, route, method) {
+  if (route === "/agenda" && method === "GET") {
+    const from = agendaDateQuery(req.query?.from_date, "Data inicial");
+    const to = agendaDateQuery(req.query?.to_date, "Data final");
+    if (from && to && from > to) fail(422, "O período da agenda está invertido.");
+    const result = await query(
+      \`SELECT \${REMINDER_COLUMNS} FROM socialmei.agenda_reminders
+        WHERE workspace_id=$1
+          AND ($2::date IS NULL OR scheduled_for >= $2::date::timestamptz)
+          AND ($3::date IS NULL OR scheduled_for < ($3::date + 1)::timestamptz)
+        ORDER BY scheduled_for,id LIMIT 501\`,
+      [session.workspace_id,from,to],
+    );
+    return send(res, 200, { items: result.rows.slice(0,500).map(reminderRow), truncated: result.rows.length > 500 });
+  }
+  if (route === "/agenda" && method === "POST") {
+    const input = bodyOf(req);
+    const id = agendaUuid(input.operation_id, "operation_id");
+    const title = String(input.title || "").trim();
+    const start = agendaInstant(input.scheduled_for);
+    const notes = String(input.notes || "").trim();
+    const clienteId = input.cliente_id == null || input.cliente_id === "" ? null : safeId(input.cliente_id,"Cliente");
+    if (!title || title.length > 160 || notes.length > 1000) fail(422, "Confira título e observações do lembrete.");
+    const fingerprint = sha256(JSON.stringify({ title,start,notes,clienteId }));
+    const result = await withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", ["agenda-reminder:" + session.workspace_id + ":" + id]);
+      const previous = await client.query(
+        "SELECT * FROM socialmei.agenda_reminders WHERE workspace_id=$1 AND id=$2",
+        [session.workspace_id,id],
+      );
+      if (previous.rows.length) {
+        if (previous.rows[0].creation_fingerprint.trim() !== fingerprint)
+          fail(409, "Este identificador já foi usado para outro lembrete.", "operation_conflict");
+        return reminderRow(previous.rows[0]);
+      }
+      if (clienteId !== null) {
+        const customer = await client.query("SELECT 1 FROM socialmei.crm_clientes WHERE workspace_id=$1 AND id=$2",[session.workspace_id,clienteId]);
+        if (!customer.rows.length) fail(404,"Cliente não encontrado neste negócio.");
+      }
+      const created = await client.query(
+        \`INSERT INTO socialmei.agenda_reminders
+          (workspace_id,id,title,scheduled_for,notes,cliente_id,creation_fingerprint)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING \${REMINDER_COLUMNS}\`,
+        [session.workspace_id,id,title,start,notes,clienteId,fingerprint],
+      );
+      return reminderRow(created.rows[0]);
+    });
+    return send(res, 201, result);
+  }
+  const prefix = "/agenda/";
+  if (route.startsWith(prefix) && method === "PATCH") {
+    const id = agendaUuid(route.slice(prefix.length), "Lembrete");
+    const input = bodyOf(req);
+    const expected = version(input.expected_revision);
+    const status = input.status;
+    if (!["done","cancelled"].includes(status)) fail(422, "Situação do lembrete inválida.");
+    const result = await query(
+      \`UPDATE socialmei.agenda_reminders
+          SET status=$4,revision=revision+1,updated_at=now()
+        WHERE workspace_id=$1 AND id=$2 AND revision=$3 AND status='pending'
+        RETURNING \${REMINDER_COLUMNS}\`,
+      [session.workspace_id,id,expected,status],
+    );
+    if (!result.rows.length) fail(409, "O lembrete foi alterado ou não existe. Atualize a agenda.", "revision_conflict");
+    return send(res, 200, reminderRow(result.rows[0]));
+  }
+  return null;
+}
+
 async function handle(req, res) {
   const method = String(req.method || "GET").toUpperCase();
   if (method === "OPTIONS") return res.status(204).end();
@@ -775,6 +1113,15 @@ async function handle(req, res) {
   if (salesResponse !== null) return salesResponse;
   const financeResponse = await finance(req, res, session, route, method);
   if (financeResponse !== null) return financeResponse;
+
+  const resourcesResponse = await agendaResources(req, res, session, route, method);
+  if (resourcesResponse !== null) return resourcesResponse;
+  const availabilityResponse = await agendaAvailability(req, res, session, route, method);
+  if (availabilityResponse !== null) return availabilityResponse;
+  const appointmentsResponse = await agendaAppointments(req, res, session, route, method);
+  if (appointmentsResponse !== null) return appointmentsResponse;
+  const remindersResponse = await agendaReminders(req, res, session, route, method);
+  if (remindersResponse !== null) return remindersResponse;
 
   if (route === "/auth/logout" && method === "POST") {
     await query("UPDATE socialmei.auth_sessoes SET revogada_em=now() WHERE token_hash=$1 AND revogada_em IS NULL", [session.tokenHash]);
