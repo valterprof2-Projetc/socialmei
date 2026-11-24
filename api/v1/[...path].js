@@ -109,7 +109,7 @@ async function resolveSession(req) {
        JOIN socialmei.workspaces w ON w.id = s.workspace_id
        JOIN socialmei.workspace_members m
          ON m.user_id = s.user_id AND m.workspace_id = s.workspace_id
-       LEFT JOIN socialmei.auth_credenciais c ON c.user_id = s.user_id
+       JOIN socialmei.auth_credenciais c ON c.user_id = s.user_id AND c.ativo = true
       WHERE s.token_hash = $1 AND s.revogada_em IS NULL AND s.expira_em > now()
       LIMIT 1`,
     [tokenHash],
@@ -182,6 +182,7 @@ async function registration(req, res) {
   return send(res, 200, { mode });
 }
 async function register(req, res) {
+  sessionSecret();
   const input = bodyOf(req);
   const name = String(input.nome || "").trim();
   const email = String(input.email || "").trim().toLowerCase();
@@ -258,13 +259,13 @@ async function consumeLoginAttempt(email, req) {
   const ip = forwarded || String(req.headers["x-real-ip"] || "unknown");
   const key = sha256(`login:${email}:${ip}`);
   const result = await query(
-    `INSERT INTO socialmei.auth_limites (chave,inicio,tentativas)
+    `INSERT INTO socialmei.auth_limites AS limite (chave,inicio,tentativas)
      VALUES ($1,now(),1)
      ON CONFLICT (chave) DO UPDATE SET
-       inicio=CASE WHEN socialmei.auth_limites.inicio < now()-interval '15 minutes'
-                   THEN now() ELSE socialmei.auth_limites.inicio END,
-       tentativas=CASE WHEN socialmei.auth_limites.inicio < now()-interval '15 minutes'
-                       THEN 1 ELSE socialmei.auth_limites.tentativas+1 END
+       inicio=CASE WHEN limite.inicio < now()-interval '15 minutes'
+                   THEN now() ELSE limite.inicio END,
+       tentativas=CASE WHEN limite.inicio < now()-interval '15 minutes'
+                       THEN 1 ELSE limite.tentativas+1 END
      RETURNING tentativas`,
     [key],
   );
@@ -273,6 +274,7 @@ async function consumeLoginAttempt(email, req) {
   return key;
 }
 async function login(req, res) {
+  sessionSecret();
   const input = bodyOf(req);
   const email = String(input.email || "").trim().toLowerCase();
   const password = input.senha;
@@ -449,11 +451,11 @@ export default async function handler(req, res) {
   try {
     return await handle(req, res);
   } catch (error) {
-    const status = Number.isInteger(error.statusCode) ? error.statusCode : 500;
+    const status = Number.isInteger(error.statusCode) ? error.statusCode : error.code === "23505" ? 409 : 500;
     if (status >= 500) console.error("SocialMEI API v1:", error.message);
     return send(res, status, {
-      error: error.code || (status >= 500 ? "internal_error" : "invalid_request"),
-      detail: status >= 500 ? "Não foi possível processar a solicitação." : error.message,
+      error: status === 409 && error.code === "23505" ? "conflict" : error.code || (status >= 500 ? "internal_error" : "invalid_request"),
+      detail: status >= 500 ? "Não foi possível processar a solicitação." : status === 409 && error.code === "23505" ? "Já existe um registro com esses dados." : error.message,
     });
   }
 }
