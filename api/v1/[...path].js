@@ -512,6 +512,229 @@ async function products(req, res, session, route, method) {
   return null;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function operationId(value) {
+  if (typeof value !== "string" || !UUID_RE.test(value)) fail(422, "operation_id deve ser um UUID válido.");
+  return value.toLowerCase();
+}
+async function idempotent(client, table, workspaceId, opId, fingerprint, work) {
+  if (!["crm_venda_operacoes","crm_financeiro_operacoes"].includes(table)) throw new Error("Invalid operation table.");
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`${workspaceId}:${opId}`]);
+  const previous = await client.query(
+    `SELECT fingerprint,resposta FROM socialmei.${table} WHERE workspace_id=$1 AND operation_id=$2`,
+    [workspaceId,opId],
+  );
+  if (previous.rows.length) {
+    if (previous.rows[0].fingerprint !== fingerprint)
+      fail(409, "Este identificador de operação já foi usado com outros dados.", "operation_conflict");
+    return previous.rows[0].resposta;
+  }
+  const response = await work();
+  await client.query(
+    `INSERT INTO socialmei.${table} (workspace_id,operation_id,fingerprint,resposta)
+     VALUES ($1,$2,$3,$4::jsonb)`,
+    [workspaceId,opId,fingerprint,JSON.stringify(response)],
+  );
+  return response;
+}
+function saleRow(row) {
+  return {
+    ...row,
+    id: Number(row.id),
+    cliente_id: row.cliente_id == null ? null : Number(row.cliente_id),
+    produto_id: row.produto_id == null ? null : Number(row.produto_id),
+    quantidade: Number(row.quantidade),
+    preco: row.preco == null ? null : Number(row.preco),
+    desconto: Number(row.desconto || 0),
+    valor: Number(row.valor),
+    versao: Number(row.versao),
+  };
+}
+function financeRow(row) {
+  return {
+    ...row,
+    id: Number(row.id),
+    cliente_id: row.cliente_id == null ? null : Number(row.cliente_id),
+    valor: Number(row.valor),
+    versao: Number(row.versao),
+  };
+}
+const SALE_COLUMNS = "id,workspace_id,cliente_id,produto_id,cliente,item,tipo_item,data,quantidade,preco,desconto,valor,pagamento,observacao,status,estoque_aplicado,importada,excluida,versao,criado_em,atualizado_em";
+const FINANCE_COLUMNS = "id,workspace_id,cliente_id,descricao,pessoa,tipo,valor,vencimento,status,data_pagamento,importada,excluida,versao,criado_em,atualizado_em";
+
+async function sales(req, res, session, route, method) {
+  if (route === "/vendas" && method === "GET") {
+    const r = await query(
+      `SELECT ${SALE_COLUMNS} FROM socialmei.crm_vendas
+        WHERE workspace_id=$1 AND excluida=false ORDER BY data DESC,id DESC LIMIT 500`,
+      [session.workspace_id],
+    );
+    return send(res, 200, r.rows.map(saleRow));
+  }
+  if (route === "/vendas" && method === "POST") {
+    const input = bodyOf(req);
+    const opId = operationId(input.operation_id);
+    const clienteId = input.cliente_id == null || input.cliente_id === "" ? null : safeId(input.cliente_id,"Cliente");
+    const produtoId = safeId(input.produto_id,"Produto ou serviço");
+    const quantidade = numeric(input.quantidade,"Quantidade");
+    if (!Number.isSafeInteger(quantidade) || quantidade < 1) fail(422, "Quantidade deve ser um inteiro positivo.");
+    const date = validDate(input.data,"Data da venda");
+    if (!date) fail(422, "Data da venda é obrigatória.");
+    const payment = String(input.pagamento || "Não informado").trim().slice(0,40);
+    if (!payment) fail(422, "Informe a forma de pagamento.");
+    const desconto = numeric(input.desconto ?? 0,"Desconto");
+    const fingerprint = sha256(JSON.stringify({
+      cliente_id:clienteId,produto_id:produtoId,quantidade,preco:input.preco ?? null,
+      desconto,data:date,pagamento:payment,status:input.status || "Pendente",
+    }));
+    const result = await withTransaction(async (client) => idempotent(
+      client,"crm_venda_operacoes",session.workspace_id,opId,fingerprint,async () => {
+        const product = await client.query(
+          "SELECT id,nome,tipo,preco,estoque,status FROM socialmei.crm_produtos WHERE id=$1 AND workspace_id=$2 FOR UPDATE",
+          [produtoId,session.workspace_id],
+        );
+        if (!product.rows.length || product.rows[0].status !== "Ativo") fail(404,"Produto ou serviço indisponível neste negócio.");
+        const p = product.rows[0];
+        const unitPrice = input.preco == null ? Number(p.preco) : numeric(input.preco,"Preço");
+        const value = Math.max(0, Number((unitPrice * quantidade - desconto).toFixed(2)));
+        if (desconto > unitPrice * quantidade) fail(422,"O desconto não pode superar o valor da venda.");
+        let customerName = "Consumidor final";
+        if (clienteId != null) {
+          const customer = await client.query(
+            "SELECT nome FROM socialmei.crm_clientes WHERE id=$1 AND workspace_id=$2",
+            [clienteId,session.workspace_id],
+          );
+          if (!customer.rows.length) fail(404,"Cliente não encontrado neste negócio.");
+          customerName = customer.rows[0].nome;
+        }
+        const status = input.status || "Pendente";
+        if (!["Pendente","Rascunho"].includes(status)) fail(422,"Status inicial de venda inválido.");
+        const created = await client.query(
+          `INSERT INTO socialmei.crm_vendas
+            (workspace_id,cliente_id,produto_id,cliente,item,tipo_item,data,quantidade,preco,desconto,valor,pagamento,observacao,status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+           RETURNING ${SALE_COLUMNS}`,
+          [session.workspace_id,clienteId,produtoId,customerName,p.nome,p.tipo,date,quantidade,unitPrice,desconto,value,payment,String(input.observacao || "").slice(0,5000),status],
+        );
+        return saleRow(created.rows[0]);
+      },
+    ));
+    return send(res, 201, result);
+  }
+  const match = /^\/vendas\/([1-9][0-9]*)\/pagar$/.exec(route);
+  if (match && method === "POST") {
+    const input = bodyOf(req);
+    const opId = operationId(input.operation_id);
+    const id = safeId(match[1],"Venda");
+    const expected = version(input.expected_version);
+    const fingerprint = sha256(JSON.stringify({id,expected,action:"pay"}));
+    const result = await withTransaction(async (client) => idempotent(
+      client,"crm_venda_operacoes",session.workspace_id,opId,fingerprint,async () => {
+        const sale = await client.query(
+          `SELECT ${SALE_COLUMNS} FROM socialmei.crm_vendas
+            WHERE id=$1 AND workspace_id=$2 FOR UPDATE`,
+          [id,session.workspace_id],
+        );
+        if (!sale.rows.length || sale.rows[0].excluida) fail(404,"Venda não encontrada neste negócio.");
+        const row = sale.rows[0];
+        if (Number(row.versao) !== expected) fail(409,"A venda foi alterada. Atualize antes de confirmar o pagamento.","revision_conflict");
+        if (row.status === "Pago") return saleRow(row);
+        if (row.status !== "Pendente") fail(409,"Somente vendas pendentes podem ser pagas.");
+        if (row.tipo_item === "Produto" && !row.estoque_aplicado) {
+          const product = await client.query(
+            "SELECT estoque FROM socialmei.crm_produtos WHERE id=$1 AND workspace_id=$2 FOR UPDATE",
+            [row.produto_id,session.workspace_id],
+          );
+          if (!product.rows.length) fail(409,"O produto associado não está disponível.");
+          if (Number(product.rows[0].estoque) < Number(row.quantidade)) fail(409,"Estoque insuficiente para confirmar esta venda.");
+          await client.query(
+            "UPDATE socialmei.crm_produtos SET estoque=estoque-$3,versao=versao+1,atualizado_em=now() WHERE id=$1 AND workspace_id=$2",
+            [row.produto_id,session.workspace_id,row.quantidade],
+          );
+        }
+        const updated = await client.query(
+          `UPDATE socialmei.crm_vendas
+              SET status='Pago',estoque_aplicado=($4::boolean),versao=versao+1,atualizado_em=now()
+            WHERE id=$1 AND workspace_id=$2 AND versao=$3
+            RETURNING ${SALE_COLUMNS}`,
+          [id,session.workspace_id,expected,row.tipo_item === "Produto"],
+        );
+        if (!updated.rows.length) fail(409,"A venda mudou durante a confirmação.","revision_conflict");
+        return saleRow(updated.rows[0]);
+      },
+    ));
+    return send(res, 200, result);
+  }
+  return null;
+}
+
+async function finance(req, res, session, route, method) {
+  if (route === "/financeiro" && method === "GET") {
+    const r = await query(
+      `SELECT ${FINANCE_COLUMNS} FROM socialmei.crm_financeiro
+        WHERE workspace_id=$1 AND excluida=false ORDER BY vencimento DESC,id DESC LIMIT 500`,
+      [session.workspace_id],
+    );
+    return send(res, 200, r.rows.map(financeRow));
+  }
+  if (route === "/financeiro" && method === "POST") {
+    const input = bodyOf(req);
+    const opId = operationId(input.operation_id);
+    const descricao = String(input.descricao || "").trim();
+    const tipo = input.tipo;
+    const valor = numeric(input.valor,"Valor");
+    const vencimento = validDate(input.vencimento,"Vencimento");
+    const status = input.status || "aberto";
+    if (descricao.length < 2 || descricao.length > 240) fail(422,"Informe uma descrição.");
+    if (!["receita","despesa"].includes(tipo)) fail(422,"Tipo financeiro inválido.");
+    if (!vencimento) fail(422,"Vencimento é obrigatório.");
+    if (!["aberto","atrasado","pago"].includes(status)) fail(422,"Status financeiro inválido.");
+    const dataPagamento = status === "pago" ? validDate(input.data_pagamento || vencimento,"Data do pagamento") : null;
+    const clienteId = input.cliente_id == null || input.cliente_id === "" ? null : safeId(input.cliente_id,"Cliente");
+    const pessoa = String(input.pessoa || "").trim().slice(0,160);
+    const fingerprint = sha256(JSON.stringify({descricao,tipo,valor,vencimento,status,dataPagamento,clienteId,pessoa}));
+    const result = await withTransaction(async (client) => idempotent(
+      client,"crm_financeiro_operacoes",session.workspace_id,opId,fingerprint,async () => {
+        if (clienteId != null) {
+          const customer = await client.query("SELECT nome FROM socialmei.crm_clientes WHERE id=$1 AND workspace_id=$2",[clienteId,session.workspace_id]);
+          if (!customer.rows.length) fail(404,"Cliente não encontrado neste negócio.");
+        }
+        const r = await client.query(
+          `INSERT INTO socialmei.crm_financeiro
+            (workspace_id,cliente_id,descricao,pessoa,tipo,valor,vencimento,status,data_pagamento)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${FINANCE_COLUMNS}`,
+          [session.workspace_id,clienteId,descricao,pessoa,tipo,valor,vencimento,status,dataPagamento],
+        );
+        return financeRow(r.rows[0]);
+      },
+    ));
+    return send(res, 201, result);
+  }
+  const match = /^\/financeiro\/([1-9][0-9]*)\/excluir$/.exec(route);
+  if (match && method === "POST") {
+    const input = bodyOf(req);
+    const opId = operationId(input.operation_id);
+    const id = safeId(match[1],"Lançamento financeiro");
+    const expected = version(input.expected_version);
+    const fingerprint = sha256(JSON.stringify({id,expected,action:"exclude"}));
+    const result = await withTransaction(async (client) => idempotent(
+      client,"crm_financeiro_operacoes",session.workspace_id,opId,fingerprint,async () => {
+        const r = await client.query(
+          `UPDATE socialmei.crm_financeiro
+              SET excluida=true,versao=versao+1,atualizado_em=now()
+            WHERE id=$1 AND workspace_id=$2 AND versao=$3 AND excluida=false
+            RETURNING ${FINANCE_COLUMNS}`,
+          [id,session.workspace_id,expected],
+        );
+        if (!r.rows.length) fail(409,"O lançamento foi alterado ou já foi excluído. Atualize antes de continuar.","revision_conflict");
+        return financeRow(r.rows[0]);
+      },
+    ));
+    return send(res, 200, result);
+  }
+  return null;
+}
+
 async function handle(req, res) {
   const method = String(req.method || "GET").toUpperCase();
   if (method === "OPTIONS") return res.status(204).end();
@@ -538,6 +761,11 @@ async function handle(req, res) {
   if (customerResponse !== null) return customerResponse;
   const productResponse = await products(req, res, session, route, method);
   if (productResponse !== null) return productResponse;
+
+  const salesResponse = await sales(req, res, session, route, method);
+  if (salesResponse !== null) return salesResponse;
+  const financeResponse = await finance(req, res, session, route, method);
+  if (financeResponse !== null) return financeResponse;
 
   if (route === "/auth/logout" && method === "POST") {
     await query("UPDATE socialmei.auth_sessoes SET revogada_em=now() WHERE token_hash=$1 AND revogada_em IS NULL", [session.tokenHash]);
