@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vercel dev",
-    "check": "node --check api/financeiro.js && node --check api/health.js && node --check lib/db.js && node --check lib/postgres.js && node --check \"api/v1/[...path].js\""
+    "check": "node --check api/financeiro.js && node --check api/health.js && node --check lib/db.js && node --check lib/postgres.js && node --check api/v1.js"
   },
   "dependencies": {
     "@libsql/client": "^0.15.15",
