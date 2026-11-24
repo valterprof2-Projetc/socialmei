@@ -378,8 +378,8 @@ async function customers(req, res, session, route, method) {
     );
     return send(res, 201, customerRow(r.rows[0]));
   }
-  const match = /^\/clientes\/([1-9]\\d*)$/.exec(route);
-  if (match && method === "PATCH") {
+  const match = route.startsWith("/clientes/") ? [null, route.slice("/clientes/".length)] : null;
+  if (match && /^[1-9][0-9]*$/.test(match[1]) && method === "PATCH") {
     const id = safeId(match[1], "Cliente");
     const input = bodyOf(req);
     const expected = version(input.expected_version);
@@ -458,8 +458,8 @@ async function products(req, res, session, route, method) {
     );
     return send(res, 201, productRow(r.rows[0]));
   }
-  const match = /^\/produtos\/([1-9]\\d*)$/.exec(route);
-  if (match && method === "PATCH") {
+  const match = route.startsWith("/produtos/") ? [null, route.slice("/produtos/".length)] : null;
+  if (match && /^[1-9][0-9]*$/.test(match[1]) && method === "PATCH") {
     const id = safeId(match[1],"Produto");
     const input = bodyOf(req);
     const expected = version(input.expected_version);
