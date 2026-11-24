@@ -1,0 +1,260 @@
+PRAGMA foreign_keys = ON;
+
+BEGIN TRANSACTION;
+
+CREATE TABLE accounts (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'owner' CHECK (role IN ('owner','manager','operator')),
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE businesses (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  owner_account_id TEXT,
+  legal_name TEXT,
+  trade_name TEXT NOT NULL,
+  cnpj TEXT UNIQUE,
+  phone TEXT,
+  whatsapp_phone TEXT,
+  email TEXT,
+  description TEXT,
+  service_area TEXT,
+  address TEXT,
+  city TEXT,
+  state TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive','pending')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (owner_account_id) REFERENCES accounts(id) ON DELETE SET NULL
+);
+
+CREATE TABLE services (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  business_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  pricing_type TEXT NOT NULL CHECK (
+    pricing_type IN (
+      'fixed','per_visit','per_day','per_hour','per_unit',
+      'per_m2','percentage','discount','quote'
+    )
+  ),
+  price_unit TEXT NOT NULL,
+  min_value REAL,
+  max_value REAL,
+  average_value REAL,
+  currency TEXT NOT NULL DEFAULT 'BRL',
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  requires_assessment INTEGER NOT NULL DEFAULT 0 CHECK (requires_assessment IN (0,1)),
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  duration_minutes INTEGER,
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  UNIQUE (business_id, name)
+);
+
+CREATE TABLE customers (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  business_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  whatsapp_phone TEXT,
+  email TEXT,
+  address TEXT,
+  neighborhood TEXT,
+  city TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  UNIQUE (business_id, phone)
+);
+
+CREATE TABLE appointments (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  business_id TEXT NOT NULL,
+  customer_id TEXT NOT NULL,
+  service_id TEXT,
+  starts_at TEXT NOT NULL,
+  ends_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','confirmed','in_progress','completed','cancelled','no_show')),
+  service_description TEXT,
+  quantity REAL NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  unit_price_cents INTEGER,
+  total_price_cents INTEGER,
+  address TEXT,
+  customer_notes TEXT,
+  internal_notes TEXT,
+  source TEXT NOT NULL DEFAULT 'manual'
+    CHECK (source IN ('manual','whatsapp','website','other')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE RESTRICT,
+  FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE SET NULL,
+  CHECK (starts_at < ends_at)
+);
+
+CREATE TABLE availability_blocks (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  business_id TEXT NOT NULL,
+  starts_at TEXT NOT NULL,
+  ends_at TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  CHECK (starts_at < ends_at)
+);
+
+CREATE TABLE business_hours (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  business_id TEXT NOT NULL,
+  weekday INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
+  opens_at TEXT NOT NULL,
+  closes_at TEXT NOT NULL,
+  break_starts_at TEXT,
+  break_ends_at TEXT,
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  UNIQUE (business_id, weekday),
+  CHECK (opens_at < closes_at),
+  CHECK (
+    (break_starts_at IS NULL AND break_ends_at IS NULL)
+    OR
+    (
+      break_starts_at IS NOT NULL
+      AND break_ends_at IS NOT NULL
+      AND break_starts_at < break_ends_at
+      AND break_starts_at > opens_at
+      AND break_ends_at < closes_at
+    )
+  )
+);
+
+CREATE TABLE cash_transactions (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  business_id TEXT NOT NULL,
+  appointment_id TEXT,
+  customer_id TEXT,
+  direction TEXT NOT NULL CHECK (direction IN ('income','expense')),
+  category TEXT NOT NULL,
+  description TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+  payment_method TEXT
+    CHECK (payment_method IN ('cash','pix','credit_card','debit_card','bank_transfer','other')),
+  transaction_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'confirmed'
+    CHECK (status IN ('pending','confirmed','cancelled')),
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (appointment_id) REFERENCES appointments(id) ON DELETE SET NULL,
+  FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL
+);
+
+CREATE TABLE auth_sessions (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  csrf_token_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  last_seen_at TEXT,
+  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+
+CREATE VIEW v_cash_balance AS
+SELECT
+  business_id,
+  COALESCE(SUM(CASE WHEN direction = 'income' AND status = 'confirmed' THEN amount_cents ELSE 0 END), 0) AS total_income_cents,
+  COALESCE(SUM(CASE WHEN direction = 'expense' AND status = 'confirmed' THEN amount_cents ELSE 0 END), 0) AS total_expense_cents,
+  COALESCE(SUM(CASE
+    WHEN status = 'confirmed' AND direction = 'income' THEN amount_cents
+    WHEN status = 'confirmed' AND direction = 'expense' THEN -amount_cents
+    ELSE 0
+  END), 0) AS balance_cents
+FROM cash_transactions
+GROUP BY business_id;
+
+CREATE INDEX idx_services_active ON services(active);
+CREATE INDEX idx_services_category ON services(category);
+CREATE INDEX idx_services_business ON services(business_id);
+CREATE INDEX idx_businesses_owner ON businesses(owner_account_id);
+
+CREATE INDEX idx_appointments_status ON appointments(status);
+CREATE INDEX idx_appointments_customer ON appointments(customer_id);
+CREATE INDEX idx_appointments_business_period ON appointments(business_id, starts_at, ends_at);
+
+CREATE INDEX idx_customers_business ON customers(business_id);
+
+CREATE INDEX idx_business_hours_business ON business_hours(business_id, weekday);
+CREATE INDEX idx_blocks_business_period ON availability_blocks(business_id, starts_at, ends_at);
+
+CREATE INDEX idx_cash_appointment ON cash_transactions(appointment_id);
+CREATE INDEX idx_cash_direction_status ON cash_transactions(direction, status);
+CREATE INDEX idx_cash_business_date ON cash_transactions(business_id, transaction_date);
+
+CREATE INDEX idx_auth_sessions_business ON auth_sessions(business_id);
+CREATE INDEX idx_auth_sessions_expiry ON auth_sessions(expires_at);
+CREATE INDEX idx_auth_sessions_account ON auth_sessions(account_id);
+
+CREATE TRIGGER trg_appointments_no_overlap_insert
+BEFORE INSERT ON appointments
+WHEN NEW.status IN ('pending','confirmed','in_progress')
+BEGIN
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM appointments a
+    WHERE a.business_id = NEW.business_id
+      AND a.status IN ('pending','confirmed','in_progress')
+      AND NEW.starts_at < a.ends_at
+      AND NEW.ends_at > a.starts_at
+  )
+  THEN RAISE(ABORT, 'Horário já ocupado por outro agendamento') END;
+
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM availability_blocks b
+    WHERE b.business_id = NEW.business_id
+      AND NEW.starts_at < b.ends_at
+      AND NEW.ends_at > b.starts_at
+  )
+  THEN RAISE(ABORT, 'Período bloqueado na agenda') END;
+END;
+
+CREATE TRIGGER trg_appointments_no_overlap_update
+BEFORE UPDATE OF business_id, starts_at, ends_at, status ON appointments
+WHEN NEW.status IN ('pending','confirmed','in_progress')
+BEGIN
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM appointments a
+    WHERE a.business_id = NEW.business_id
+      AND a.id <> NEW.id
+      AND a.status IN ('pending','confirmed','in_progress')
+      AND NEW.starts_at < a.ends_at
+      AND NEW.ends_at > a.starts_at
+  )
+  THEN RAISE(ABORT, 'Horário já ocupado por outro agendamento') END;
+
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
+    FROM availability_blocks b
+    WHERE b.business_id = NEW.business_id
+      AND NEW.starts_at < b.ends_at
+      AND NEW.ends_at > b.starts_at
+  )
+  THEN RAISE(ABORT, 'Período bloqueado na agenda') END;
+END;
+
+COMMIT;
