@@ -519,11 +519,6 @@ async function handle(req, res) {
   const route = routeOf(req);
   const input = bodyOf(req);
 
-  const customerResponse = await customers(req, res, session, route, method);
-  if (customerResponse !== null) return customerResponse;
-  const productResponse = await products(req, res, session, route, method);
-  if (productResponse !== null) return productResponse;
-
   if (route === "/auth/registration" && method === "GET") return registration(req, res);
   if (route === "/auth/session" && method === "GET") {
     const session = await resolveSession(req);
@@ -538,6 +533,11 @@ async function handle(req, res) {
     return send(res, 401, { error: "unauthorized", detail: "Sua sessão expirou. Entre novamente." });
   }
   if (!["GET", "HEAD"].includes(method)) requireCsrf(req, session);
+
+  const customerResponse = await customers(req, res, session, route, method);
+  if (customerResponse !== null) return customerResponse;
+  const productResponse = await products(req, res, session, route, method);
+  if (productResponse !== null) return productResponse;
 
   if (route === "/auth/logout" && method === "POST") {
     await query("UPDATE socialmei.auth_sessoes SET revogada_em=now() WHERE token_hash=$1 AND revogada_em IS NULL", [session.tokenHash]);
