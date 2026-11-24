@@ -385,7 +385,7 @@ async function customers(req, res, session, route, method) {
     const expected = version(input.expected_version);
     const fields = [];
     const values = [id,session.workspace_id,expected];
-    const add = (column, value) => { values.push(value); fields.push(`${column}=${values.length}`); };
+    const add = (column, value) => { values.push(value); fields.push(`${column}=$${values.length}`); };
     if (input.nome !== undefined) {
       const value = String(input.nome).trim();
       if (value.length < 2 || value.length > 160) fail(422, "Informe o nome do cliente.");
