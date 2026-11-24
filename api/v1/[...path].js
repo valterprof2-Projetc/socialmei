@@ -790,11 +790,11 @@ async function lockAgendaResource(client, workspaceId, resourceId) {
 }
 async function hasAppointmentConflict(client, workspaceId, resourceId, start, end, excludeId = null) {
   const result = await client.query(
-    \`SELECT 1 FROM socialmei.agenda_appointments
+    `SELECT 1 FROM socialmei.agenda_appointments
       WHERE workspace_id=$1 AND resource_id=$2 AND status='pending'
         AND scheduled_for < $4::timestamptz AND ends_at > $3::timestamptz
         AND ($5::uuid IS NULL OR id <> $5::uuid)
-      LIMIT 1\`,
+      LIMIT 1`,
     [workspaceId, resourceId, start, end, excludeId],
   );
   return result.rows.length > 0;
@@ -841,10 +841,10 @@ async function agendaResources(req, res, session, route, method) {
     if (nome !== null && (!nome || nome.length > 160)) fail(422, "Informe um nome de até 160 caracteres.");
     if (input.ativo !== undefined && typeof input.ativo !== "boolean") fail(422, "Status do recurso inválido.");
     const result = await query(
-      \`UPDATE socialmei.agenda_resources
+      `UPDATE socialmei.agenda_resources
           SET nome=COALESCE($4,nome),ativo=COALESCE($5,ativo),revision=revision+1,updated_at=now()
         WHERE workspace_id=$1 AND id=$2 AND revision=$3
-        RETURNING workspace_id,id,nome,ativo,revision,created_at,updated_at\`,
+        RETURNING workspace_id,id,nome,ativo,revision,created_at,updated_at`,
       [session.workspace_id,id,expected,nome,input.ativo === undefined ? null : input.ativo],
     );
     if (!result.rows.length) fail(409, "O recurso foi alterado ou não existe. Atualize a lista.", "revision_conflict");
@@ -870,9 +870,9 @@ async function agendaAvailability(req, res, session, route, method) {
   if (!resource.rows.length) fail(404, "Recurso ativo não encontrado neste negócio.");
   const end = new Date(new Date(start).getTime() + Number(service.rows[0].duracao_minutos) * 60000).toISOString();
   const conflict = await query(
-    \`SELECT 1 FROM socialmei.agenda_appointments
+    `SELECT 1 FROM socialmei.agenda_appointments
       WHERE workspace_id=$1 AND resource_id=$2 AND status='pending'
-        AND scheduled_for < $4::timestamptz AND ends_at > $3::timestamptz LIMIT 1\`,
+        AND scheduled_for < $4::timestamptz AND ends_at > $3::timestamptz LIMIT 1`,
     [session.workspace_id,resourceId,start,end],
   );
   return send(res, 200, { available: conflict.rows.length === 0, ends_at: end });
@@ -884,12 +884,12 @@ async function agendaAppointments(req, res, session, route, method) {
     if (from && to && from > to) fail(422, "O período da agenda está invertido.");
     const includeCancelled = String(req.query?.include_cancelled || "") === "true";
     const result = await query(
-      \`SELECT \${APPOINTMENT_COLUMNS} FROM socialmei.agenda_appointments
+      `SELECT ${APPOINTMENT_COLUMNS} FROM socialmei.agenda_appointments
         WHERE workspace_id=$1
           AND ($2::date IS NULL OR scheduled_for >= $2::date::timestamptz)
           AND ($3::date IS NULL OR scheduled_for < ($3::date + 1)::timestamptz)
           AND ($4::boolean OR status <> 'cancelled')
-        ORDER BY scheduled_for,id LIMIT 501\`,
+        ORDER BY scheduled_for,id LIMIT 501`,
       [session.workspace_id,from,to,includeCancelled],
     );
     return send(res, 200, { items: result.rows.slice(0,500).map(appointmentRow), truncated: result.rows.length > 500 });
@@ -937,16 +937,16 @@ async function agendaAppointments(req, res, session, route, method) {
       if (await hasAppointmentConflict(client,session.workspace_id,resourceId,start,end))
         fail(409, "Horário ocupado para este recurso. Escolha outro horário.", "schedule_conflict");
       const result = await client.query(
-        \`INSERT INTO socialmei.agenda_appointments
+        `INSERT INTO socialmei.agenda_appointments
           (workspace_id,id,cliente_id,servico_id,resource_id,client_name,service_name,duration_minutes,price,scheduled_for,ends_at,notes,creation_fingerprint)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING \${APPOINTMENT_COLUMNS}\`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING ${APPOINTMENT_COLUMNS}`,
         [session.workspace_id,id,clienteId,serviceId,resourceId,customer.rows[0].nome,service.rows[0].nome,duration,Number(service.rows[0].preco),start,end,notes,fingerprint],
       );
       const row = result.rows[0];
       await client.query(
-        \`INSERT INTO socialmei.agenda_appointment_history
+        `INSERT INTO socialmei.agenda_appointment_history
           (workspace_id,appointment_id,revision,scheduled_for,ends_at,status)
-         VALUES ($1,$2,$3,$4,$5,$6)\`,
+         VALUES ($1,$2,$3,$4,$5,$6)`,
         [session.workspace_id,id,row.revision,row.scheduled_for,row.ends_at,row.status],
       );
       return appointmentRow(row);
@@ -957,9 +957,9 @@ async function agendaAppointments(req, res, session, route, method) {
   if (route.startsWith(historyPrefix) && route.endsWith("/history") && method === "GET") {
     const id = agendaUuid(route.slice(historyPrefix.length,-"/history".length), "Agendamento");
     const result = await query(
-      \`SELECT revision,scheduled_for,ends_at,status,recorded_at
+      `SELECT revision,scheduled_for,ends_at,status,recorded_at
          FROM socialmei.agenda_appointment_history
-        WHERE workspace_id=$1 AND appointment_id=$2 ORDER BY revision\`,
+        WHERE workspace_id=$1 AND appointment_id=$2 ORDER BY revision`,
       [session.workspace_id,id],
     );
     return send(res, 200, { items: result.rows.map((row) => ({ ...row, revision: Number(row.revision) })) });
@@ -977,8 +977,8 @@ async function agendaAppointments(req, res, session, route, method) {
       fail(422, "Informe uma nova data e horário ou uma situação.");
     const result = await withTransaction(async (client) => {
       const current = await client.query(
-        \`SELECT * FROM socialmei.agenda_appointments
-          WHERE workspace_id=$1 AND id=$2 FOR UPDATE\`,
+        `SELECT * FROM socialmei.agenda_appointments
+          WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
         [session.workspace_id,id],
       );
       if (!current.rows.length) fail(404, "Agendamento não encontrado neste negócio.");
@@ -994,18 +994,18 @@ async function agendaAppointments(req, res, session, route, method) {
           fail(409, "Horário ocupado para este recurso. Escolha outro horário.", "schedule_conflict");
       }
       const updated = await client.query(
-        \`UPDATE socialmei.agenda_appointments
+        `UPDATE socialmei.agenda_appointments
             SET scheduled_for=$4,ends_at=$5,status=$6,revision=revision+1,updated_at=now()
           WHERE workspace_id=$1 AND id=$2 AND revision=$3
-          RETURNING \${APPOINTMENT_COLUMNS}\`,
+          RETURNING ${APPOINTMENT_COLUMNS}`,
         [session.workspace_id,id,expected,start,end,nextStatus],
       );
       if (!updated.rows.length) fail(409, "O agendamento foi alterado. Atualize a agenda.", "revision_conflict");
       const saved = updated.rows[0];
       await client.query(
-        \`INSERT INTO socialmei.agenda_appointment_history
+        `INSERT INTO socialmei.agenda_appointment_history
           (workspace_id,appointment_id,revision,scheduled_for,ends_at,status)
-         VALUES ($1,$2,$3,$4,$5,$6)\`,
+         VALUES ($1,$2,$3,$4,$5,$6)`,
         [session.workspace_id,id,saved.revision,saved.scheduled_for,saved.ends_at,saved.status],
       );
       return appointmentRow(saved);
@@ -1020,11 +1020,11 @@ async function agendaReminders(req, res, session, route, method) {
     const to = agendaDateQuery(req.query?.to_date, "Data final");
     if (from && to && from > to) fail(422, "O período da agenda está invertido.");
     const result = await query(
-      \`SELECT \${REMINDER_COLUMNS} FROM socialmei.agenda_reminders
+      `SELECT ${REMINDER_COLUMNS} FROM socialmei.agenda_reminders
         WHERE workspace_id=$1
           AND ($2::date IS NULL OR scheduled_for >= $2::date::timestamptz)
           AND ($3::date IS NULL OR scheduled_for < ($3::date + 1)::timestamptz)
-        ORDER BY scheduled_for,id LIMIT 501\`,
+        ORDER BY scheduled_for,id LIMIT 501`,
       [session.workspace_id,from,to],
     );
     return send(res, 200, { items: result.rows.slice(0,500).map(reminderRow), truncated: result.rows.length > 500 });
@@ -1054,9 +1054,9 @@ async function agendaReminders(req, res, session, route, method) {
         if (!customer.rows.length) fail(404,"Cliente não encontrado neste negócio.");
       }
       const created = await client.query(
-        \`INSERT INTO socialmei.agenda_reminders
+        `INSERT INTO socialmei.agenda_reminders
           (workspace_id,id,title,scheduled_for,notes,cliente_id,creation_fingerprint)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING \${REMINDER_COLUMNS}\`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ${REMINDER_COLUMNS}`,
         [session.workspace_id,id,title,start,notes,clienteId,fingerprint],
       );
       const row = created.rows[0];
