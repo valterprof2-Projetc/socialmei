@@ -905,6 +905,7 @@ async function agendaAppointments(req, res, session, route, method) {
     if (notes.length > 1000) fail(422, "As observações devem ter até 1000 caracteres.");
     const fingerprint = sha256(JSON.stringify({ clienteId,serviceId,resourceId,start,notes }));
     const created = await withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", ["agenda-appointment-create:" + session.workspace_id + ":" + id]);
       await lockAgendaResource(client,session.workspace_id,resourceId);
       const previous = await client.query(
         "SELECT * FROM socialmei.agenda_appointments WHERE workspace_id=$1 AND id=$2",
@@ -1058,7 +1059,14 @@ async function agendaReminders(req, res, session, route, method) {
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING \${REMINDER_COLUMNS}\`,
         [session.workspace_id,id,title,start,notes,clienteId,fingerprint],
       );
-      return reminderRow(created.rows[0]);
+      const row = created.rows[0];
+      await client.query(
+        `INSERT INTO socialmei.agenda_reminder_history
+          (workspace_id,reminder_id,revision,scheduled_for,status)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [session.workspace_id,id,row.revision,row.scheduled_for,row.status],
+      );
+      return reminderRow(row);
     });
     return send(res, 201, result);
   }
@@ -1069,15 +1077,25 @@ async function agendaReminders(req, res, session, route, method) {
     const expected = version(input.expected_revision);
     const status = input.status;
     if (!["done","cancelled"].includes(status)) fail(422, "Situação do lembrete inválida.");
-    const result = await query(
-      \`UPDATE socialmei.agenda_reminders
-          SET status=$4,revision=revision+1,updated_at=now()
-        WHERE workspace_id=$1 AND id=$2 AND revision=$3 AND status='pending'
-        RETURNING \${REMINDER_COLUMNS}\`,
-      [session.workspace_id,id,expected,status],
-    );
-    if (!result.rows.length) fail(409, "O lembrete foi alterado ou não existe. Atualize a agenda.", "revision_conflict");
-    return send(res, 200, reminderRow(result.rows[0]));
+    const saved = await withTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE socialmei.agenda_reminders
+            SET status=$4,revision=revision+1,updated_at=now()
+          WHERE workspace_id=$1 AND id=$2 AND revision=$3 AND status='pending'
+          RETURNING ${REMINDER_COLUMNS}`,
+        [session.workspace_id,id,expected,status],
+      );
+      if (!result.rows.length) fail(409, "O lembrete foi alterado ou não existe. Atualize a agenda.", "revision_conflict");
+      const row = result.rows[0];
+      await client.query(
+        `INSERT INTO socialmei.agenda_reminder_history
+          (workspace_id,reminder_id,revision,scheduled_for,status)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [session.workspace_id,id,row.revision,row.scheduled_for,row.status],
+      );
+      return reminderRow(row);
+    });
+    return send(res, 200, saved);
   }
   return null;
 }
