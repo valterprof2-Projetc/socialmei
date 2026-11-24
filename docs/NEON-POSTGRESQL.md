@@ -44,7 +44,7 @@ Não coloque nenhuma dessas variáveis em arquivos do frontend, no Git ou em men
 - `GET /api/v1/workspace-profile`
 - `PATCH /api/v1/workspace-profile`
 
-A recuperação de senha e os módulos de dados (clientes, produtos, vendas, financeiro e agenda) ainda não estão concluídos nesta camada.
+A recuperação de senha, verificação de e-mail e os módulos de dados (clientes, produtos, vendas, financeiro e agenda) ainda não estão concluídos nesta camada. Portanto, esta entrega é uma base técnica para Preview e não deve ser considerada pronta para produção ou para abertura pública de contas.
 
 ## Teste de conectividade
 
