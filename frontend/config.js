@@ -1,6 +1,9 @@
 /* PUBLIC CONFIGURATION */
 // Apenas configuração pública. Segredos devem permanecer no servidor/n8n.
 const SOCIALMEI_CONFIG = Object.freeze({
+  // Autenticação real habilitada somente nesta branch de Preview.
+  // O cadastro permanece protegido por convite no backend.
+  auth: { mode: "remote", apiBaseUrl: "/api/v1" },
   // Experimental branch: no automatic connection to a live message endpoint.
   n8nMessagesUrl: null,
   n8nAuthHeader: null,
@@ -21,4 +24,39 @@ const SOCIALMEI_CONFIG = Object.freeze({
     ga4MeasurementId: "",
     clarityProjectId: "",
   },
+});
+
+// Campo de convite da primeira conta administrativa.
+// É inserido no DOM antes da interação; o código nunca é armazenado.
+document.addEventListener("DOMContentLoaded", () => {
+  if (SOCIALMEI_CONFIG.auth?.mode !== "remote") return;
+  const form = document.getElementById("fC");
+  const email = document.getElementById("cMail")?.closest(".fld");
+  if (!form || !email || document.getElementById("cInvite")) return;
+
+  const field = document.createElement("div");
+  field.className = "fld";
+  const label = document.createElement("label");
+  label.htmlFor = "cInvite";
+  label.textContent = "Código do convite";
+  const input = document.createElement("input");
+  input.className = "in";
+  input.id = "cInvite";
+  input.name = "convite";
+  input.type = "text";
+  input.inputMode = "text";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.maxLength = 64;
+  input.placeholder = "Cole aqui o código recebido do administrador";
+  input.setAttribute("aria-describedby", "eInvite");
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.textContent = "Este cadastro é restrito e o convite só pode ser utilizado uma vez.";
+  const error = document.createElement("div");
+  error.className = "err";
+  error.id = "eInvite";
+  error.setAttribute("role", "alert");
+  field.append(label, input, hint, error);
+  email.insertAdjacentElement("afterend", field);
 });
