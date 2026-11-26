@@ -162,8 +162,8 @@
     const profile = document.createElement("script");
     profile.src = "scripts/app-perfil.js";
     document.body.appendChild(profile);
-  }
-})().catch(() => {
+  }})().catch((error) => {
+  console.error("V22 bootstrap failed:", error);
   const app = document.getElementById("app");
   app.hidden = false;
   app.setAttribute("role", "alert");
