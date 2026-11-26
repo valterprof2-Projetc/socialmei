@@ -59,4 +59,18 @@ document.addEventListener("DOMContentLoaded", () => {
   error.setAttribute("role", "alert");
   field.append(label, input, hint, error);
   email.insertAdjacentElement("afterend", field);
+
+  input.addEventListener("input", () => {
+    error.textContent = "";
+    input.setAttribute("aria-invalid", "false");
+  });
+  form.addEventListener("submit", (event) => {
+    if (!/^[a-f0-9]{64}$/i.test(input.value.trim())) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      error.textContent = "Informe o código completo do convite (64 caracteres).";
+      input.setAttribute("aria-invalid", "true");
+      input.focus();
+    }
+  }, true);
 });
