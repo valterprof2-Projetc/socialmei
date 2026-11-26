@@ -172,6 +172,54 @@
         -130,
         180
       ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "socialmei-redundante-instagram-shadow",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b11b22c3-d444-4555-8666-777788889905",
+      "name": "Instagram Meta — Verificação GET",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -900,
+        470
+      ],
+      "webhookId": "socialmei-redundante-instagram-verify"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const q=$json.query||$json;const expected=String($vars.SOCIALMEI_META_VERIFY_TOKEN||\"\");if(!expected||q[\"hub.verify_token\"]!==expected)throw new Error(\"Token de verificação Meta inválido.\");return [{json:{challenge:String(q[\"hub.challenge\"]||\"\")}}];"
+      },
+      "id": "b11b22c3-d444-4555-8666-777788889906",
+      "name": "Instagram — Validar challenge Meta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -650,
+        470
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{$json.challenge}}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "b11b22c3-d444-4555-8666-777788889907",
+      "name": "Instagram — Responder challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -390,
+        470
+      ]
     }
   ],
   "connections": {
@@ -235,6 +283,28 @@
         [
           {
             "node": "Instagram — Resposta shadow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Meta — Verificação GET": {
+      "main": [
+        [
+          {
+            "node": "Instagram — Validar challenge Meta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram — Validar challenge Meta": {
+      "main": [
+        [
+          {
+            "node": "Instagram — Responder challenge",
             "type": "main",
             "index": 0
           }
