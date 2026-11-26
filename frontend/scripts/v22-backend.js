@@ -523,7 +523,7 @@ window.SocialMEIV22 = (() => {
       }
       if (silent && loaded && H.startsWith("/caixa")) render();
     } catch (e) {
-      if (!silent && ![403, 503].includes(e.status)) throw e;
+      if (!silent && ![403, 404, 503].includes(e.status)) throw e;
     } finally {
       inboxPolling = false;
     }
