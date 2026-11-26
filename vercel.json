@@ -7,6 +7,10 @@
     {
       "source": "/api/financeiro/:path*",
       "destination": "/api/financeiro?route=:path*"
+    },
+    {
+      "source": "/api/integrations/:route*",
+      "destination": "/api/integrations?route=:route*"
     }
   ]
 }
