@@ -98,11 +98,59 @@ async function quotes(req,res,wid){
  });
  return send(res,result.duplicate?200:201,result);
 }
+
+async function agenda(req,res,wid,route){
+ if(route==="agenda/resources"&&req.method==="GET"){
+  const r=await query("SELECT id,nome,ativo FROM socialmei.agenda_resources WHERE workspace_id=$1 AND ativo=true ORDER BY lower(nome)",[wid]);
+  return send(res,200,{items:r.rows.map(x=>({...x,id:String(x.id)}))});
+ }
+ if(route==="agenda/availability"&&req.method==="GET"){
+  const resourceId=String(req.query?.resource_id||""),serviceId=Number(req.query?.servico_id),start=new Date(String(req.query?.scheduled_for||""));
+  if(!/^[0-9a-f-]{36}$/i.test(resourceId)||!Number.isSafeInteger(serviceId)||serviceId<1||!Number.isFinite(start.getTime()))fail(422,"Informe recurso, serviço e horário ISO válidos.");
+  const s=await query("SELECT duracao_minutos FROM socialmei.crm_produtos WHERE workspace_id=$1 AND id=$2 AND tipo='Serviço' AND status='Ativo'",[wid,serviceId]);
+  if(!s.rows.length||!s.rows[0].duracao_minutos)fail(404,"Serviço ativo com duração não cadastrado.");
+  const r=await query("SELECT 1 FROM socialmei.agenda_resources WHERE workspace_id=$1 AND id=$2 AND ativo=true",[wid,resourceId]);
+  if(!r.rows.length)fail(404,"Recurso de agenda não encontrado.");
+  const end=new Date(start.getTime()+Number(s.rows[0].duracao_minutos)*60000);
+  const conflict=await query("SELECT 1 FROM socialmei.agenda_appointments WHERE workspace_id=$1 AND resource_id=$2 AND status='pending' AND scheduled_for<$4 AND ends_at>$3 LIMIT 1",[wid,resourceId,start.toISOString(),end.toISOString()]);
+  return send(res,200,{available:!conflict.rows.length,ends_at:end.toISOString()});
+ }
+ if(route==="agenda/appointments"&&req.method==="POST"){
+  const x=bodyOf(req);
+  if(x.customer_confirmed!==true)fail(409,"O agendamento só pode ser registrado após confirmação explícita do cliente.","customer_confirmation_required");
+  const id=String(x.operation_id||""),resourceId=String(x.resource_id||""),clientId=Number(x.cliente_id),serviceId=Number(x.servico_id),start=new Date(String(x.scheduled_for||"")),notes=String(x.notes||"").trim();
+  if(!/^[0-9a-f-]{36}$/i.test(id)||!/^[0-9a-f-]{36}$/i.test(resourceId)||!Number.isSafeInteger(clientId)||clientId<1||!Number.isSafeInteger(serviceId)||serviceId<1||!Number.isFinite(start.getTime())||notes.length>1000)fail(422,"Dados do agendamento inválidos.");
+  const fingerprint=hash(JSON.stringify({clientId,serviceId,resourceId,start:start.toISOString(),notes}));
+  const saved=await tx(async c=>{
+   await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",["socialmei-m2m-appointment:"+wid+":"+id]);
+   await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",["agenda:"+wid+":"+resourceId]);
+   const old=await c.query("SELECT * FROM socialmei.agenda_appointments WHERE workspace_id=$1 AND id=$2",[wid,id]);
+   if(old.rows.length){if(String(old.rows[0].creation_fingerprint).trim()!==fingerprint)fail(409,"operation_id reutilizado com dados diferentes.");return {...old.rows[0],duplicate:true};}
+   const [resource,service,customer]=await Promise.all([
+    c.query("SELECT id FROM socialmei.agenda_resources WHERE workspace_id=$1 AND id=$2 AND ativo=true FOR SHARE",[wid,resourceId]),
+    c.query("SELECT id,nome,preco,duracao_minutos FROM socialmei.crm_produtos WHERE workspace_id=$1 AND id=$2 AND tipo='Serviço' AND status='Ativo' FOR SHARE",[wid,serviceId]),
+    c.query("SELECT nome FROM socialmei.crm_clientes WHERE workspace_id=$1 AND id=$2",[wid,clientId])
+   ]);
+   if(!resource.rows.length)fail(404,"Recurso ativo não encontrado.");if(!service.rows.length||!service.rows[0].duracao_minutos)fail(404,"Serviço ativo com duração não encontrado.");if(!customer.rows.length)fail(404,"Cliente não encontrado.");
+   const duration=Number(service.rows[0].duracao_minutos),end=new Date(start.getTime()+duration*60000);
+   const conflict=await c.query("SELECT 1 FROM socialmei.agenda_appointments WHERE workspace_id=$1 AND resource_id=$2 AND status='pending' AND scheduled_for<$4 AND ends_at>$3 LIMIT 1",[wid,resourceId,start.toISOString(),end.toISOString()]);
+   if(conflict.rows.length)fail(409,"Horário ocupado. Consulte outro horário.","schedule_conflict");
+   const r=await c.query(`INSERT INTO socialmei.agenda_appointments(workspace_id,id,cliente_id,servico_id,resource_id,client_name,service_name,duration_minutes,price,scheduled_for,ends_at,notes,creation_fingerprint)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id,cliente_id,servico_id,resource_id,client_name,service_name,duration_minutes,price,scheduled_for,ends_at,notes,status,revision`,
+    [wid,id,clientId,serviceId,resourceId,customer.rows[0].nome,service.rows[0].nome,duration,Number(service.rows[0].preco),start.toISOString(),end.toISOString(),notes,fingerprint]);
+   const row=r.rows[0];await c.query("INSERT INTO socialmei.agenda_appointment_history(workspace_id,appointment_id,revision,scheduled_for,ends_at,status) VALUES($1,$2,$3,$4,$5,$6)",[wid,id,row.revision,row.scheduled_for,row.ends_at,row.status]);return row;
+  });
+  return send(res,201,{...saved,id:String(saved.id),cliente_id:Number(saved.cliente_id),servico_id:Number(saved.servico_id),duplicate:Boolean(saved.duplicate)});
+ }
+ return null;
+}
+
 export default async function handler(req,res){
  try{if(req.method==="OPTIONS")return res.status(204).end();const wid=auth(req),route=String(req.query?.route||"").replace(/^\/+|\/+$/g,"");
   if(route==="messages/ingest")return await ingest(req,res,wid);
   if(route==="catalog/services")return await catalog(req,res,wid);
   if(route==="quotes")return await quotes(req,res,wid);
+  if(route==="agenda/resources"||route==="agenda/availability"||route==="agenda/appointments")return await agenda(req,res,wid,route);
   return send(res,404,{error:"not_found",detail:"Endpoint de integração não implementado."});
  }catch(e){const status=Number.isInteger(e.statusCode)?e.statusCode:e.code==="23505"?409:500;if(status>=500)console.error("SocialMEI integration API:",e.message);
   return send(res,status,{error:e.code||(status>=500?"internal_error":"invalid_request"),detail:status>=500?"Não foi possível processar a integração.":e.message});}
