@@ -871,7 +871,7 @@ window.SocialMEIV22 = (() => {
     root.hidden = false;
     root.textContent =
       "Não foi possível carregar sua sessão. Atualize a página para tentar novamente.";
-    console.error("V22 initialization failed");
+    cconsole.error("V22 initialization failed:", e);
   });
   return {
     remote,
