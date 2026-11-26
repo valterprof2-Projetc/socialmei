@@ -19,7 +19,7 @@ function channelRefs(input){
 }
 async function ingest(req,res,wid){
  if(req.method!=="POST")fail(405,"Método não permitido.");
- const input=bodyOf(req),refs=channelRefs(input),externalId=String(input.external_message_id||""),text=String(input.text||"");
+ const input=bodyOf(req);if(input.ignored===true)return send(res,200,{accepted:false,ignored:true,reason:String(input.reason||"Evento ignorado")});const refs=channelRefs(input),externalId=String(input.external_message_id||""),text=String(input.text||"");
  const contactName=String(input.contact_name||"Cliente").trim().slice(0,160)||"Cliente";
  if(!/^[!-~]{1,1024}$/.test(externalId))fail(422,"external_message_id inválido.");
  if(!text.trim()||Buffer.byteLength(text,"utf8")>8192)fail(422,"Mensagem vazia ou acima de 8 KB.");
