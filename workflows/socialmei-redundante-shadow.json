@@ -1,0 +1,256 @@
+{
+  "name": "SocialMEI Redundante — Agente IA WAHA-WhatsApp-Instagram",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "socialmei-redundante-waha-shadow",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a11b22c3-d444-4555-8666-777788889901",
+      "name": "WAHA — Entrada isolada",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -900,
+        -180
+      ],
+      "webhookId": "socialmei-redundante-waha-shadow"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const event = $json.body?.event ?? $json.event ?? \"\";\nconst p = $json.body?.payload ?? $json.payload ?? {};\nconst data = p._data ?? {};\nif (p.fromMe === true || data.fromMe === true) return [];\nif (!p.id || !p.from || typeof p.body !== \"string\" || !p.body.trim()) {\n  throw new Error(\"Evento WAHA sem ID, remetente ou texto; nenhuma mensagem foi enviada ao CRM.\");\n}\nif (event && !String(event).toLowerCase().includes(\"message\")) return [];\nconst accountRef = String($vars.SOCIALMEI_WAHA_ACCOUNT_REF || \"\");\nif (!/^waha:[0-9]{1,40}@c\\.us$/.test(accountRef)) throw new Error(\"Configure a variável SOCIALMEI_WAHA_ACCOUNT_REF no n8n.\");\nconst rawFrom = String(p.from);\nconst contactRef = rawFrom.includes(\"@lid\") ? \"waha:\" + rawFrom : \"waha:\" + rawFrom;\nconst externalId = typeof p.id === \"string\" ? p.id : (p.id._serialized || p.id.id || \"\");\nif (!externalId) throw new Error(\"ID externo WAHA não reconhecido.\");\nreturn [{json:{\n channel:\"whatsapp\",account_ref:accountRef,contact_ref:contactRef,\n external_message_id:externalId,text:p.body,\n contact_name:data.Info?.PushName || data.pushName || p.notifyName || \"Cliente\",\n occurred_at:p.timestamp ? new Date(Number(p.timestamp)*1000).toISOString() : new Date().toISOString(),\n customer:{name:data.Info?.PushName || data.pushName || p.notifyName || \"Cliente\",phone:rawFrom.endsWith(\"@c.us\")?rawFrom.split(\"@\")[0]:null}\n}}];"
+      },
+      "id": "a11b22c3-d444-4555-8666-777788889902",
+      "name": "WAHA — Normalizar e filtrar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -650,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.SOCIALMEI_API_BASE_URL + '/api/integrations/messages/ingest'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{JSON.stringify($json)}}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "a11b22c3-d444-4555-8666-777788889903",
+      "name": "SocialMEI API — Persistir WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -390,
+        -180
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "SocialMEI Redundante API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "a11b22c3-d444-4555-8666-777788889904",
+      "name": "WAHA — Resposta shadow",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -130,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "socialmei-redundante-instagram-shadow",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b11b22c3-d444-4555-8666-777788889901",
+      "name": "Instagram Meta — Entrada isolada",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -900,
+        180
+      ],
+      "webhookId": "socialmei-redundante-instagram-shadow"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = $json.body ?? $json;\nconst messages = [];\nfor (const entry of (body.entry || [])) {\n  for (const event of (entry.messaging || [])) {\n    if (event.message?.is_echo) continue;\n    if (!event.message?.mid || typeof event.message.text !== \"string\" || !event.message.text.trim()) continue;\n    messages.push({channel:\"instagram\",account_ref:\"instagram:\"+String(event.recipient?.id || entry.id),contact_ref:\"instagram:\"+String(event.sender?.id || \"\"),external_message_id:String(event.message.mid),text:event.message.text,contact_name:\"Contato Instagram\",occurred_at:event.timestamp?new Date(Number(event.timestamp)).toISOString():new Date().toISOString(),customer:{name:\"Contato Instagram\"}});\n  }\n}\nif (!messages.length) return [{json:{ignored:true,reason:\"Nenhuma mensagem textual recebida.\"}}];\nif (messages.length > 1) throw new Error(\"O lote Meta contém mais de uma mensagem. Encaminhamento em lote será habilitado antes de ativar este canal.\");\nconst m=messages[0];\nif (!/^instagram:[0-9]{1,40}$/.test(m.account_ref)||!/^instagram:[0-9]{1,40}$/.test(m.contact_ref)) throw new Error(\"IDs de conta/contato Instagram inválidos.\");\nreturn [{json:m}];"
+      },
+      "id": "b11b22c3-d444-4555-8666-777788889902",
+      "name": "Instagram — Normalizar evento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -650,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.SOCIALMEI_API_BASE_URL + '/api/integrations/messages/ingest'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{JSON.stringify($json)}}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "b11b22c3-d444-4555-8666-777788889903",
+      "name": "SocialMEI API — Persistir Instagram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -390,
+        180
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "SocialMEI Redundante API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "b11b22c3-d444-4555-8666-777788889904",
+      "name": "Instagram — Resposta shadow",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -130,
+        180
+      ]
+    }
+  ],
+  "connections": {
+    "WAHA — Entrada isolada": {
+      "main": [
+        [
+          {
+            "node": "WAHA — Normalizar e filtrar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WAHA — Normalizar e filtrar": {
+      "main": [
+        [
+          {
+            "node": "SocialMEI API — Persistir WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SocialMEI API — Persistir WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "WAHA — Resposta shadow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Meta — Entrada isolada": {
+      "main": [
+        [
+          {
+            "node": "Instagram — Normalizar evento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram — Normalizar evento": {
+      "main": [
+        [
+          {
+            "node": "SocialMEI API — Persistir Instagram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SocialMEI API — Persistir Instagram": {
+      "main": [
+        [
+          {
+            "node": "Instagram — Resposta shadow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
