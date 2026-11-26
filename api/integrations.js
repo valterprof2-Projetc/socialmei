@@ -36,17 +36,17 @@ async function ingest(req,res,wid){
    if(found.rows.length)customerId=Number(found.rows[0].id);
    else {const created=await c.query("INSERT INTO socialmei.crm_clientes(workspace_id,nome,telefone,instagram) VALUES($1,$2,$3,$4) RETURNING id",[wid,customerName,phone,instagram]);customerId=Number(created.rows[0].id);}
   }
+  const old=await c.query(`SELECT m.id,m.conversation_id,m.fingerprint FROM socialmei.me_external_messages x JOIN socialmei.me_messages m
+   ON m.workspace_id=x.workspace_id AND m.id=x.message_id WHERE x.workspace_id=$1 AND x.channel=$2 AND x.account_ref=$3 AND x.external_message_id=$4`,
+   [wid,refs.channel,refs.account,externalId]);
+  if(old.rows.length){if(old.rows[0].fingerprint!==fingerprint)fail(409,"ID externo reutilizado com conteúdo diferente.","message_conflict");
+   return {accepted:true,duplicate:true,conversation_id:Number(old.rows[0].conversation_id),message_id:Number(old.rows[0].id),customer_id:customerId};}
   const conv=await c.query(`INSERT INTO socialmei.me_conversations(workspace_id,channel,account_ref,contact_ref,contact_name,revision,origin,cliente_id)
    VALUES($1,$2,$3,$4,$5,1,$6,$7) ON CONFLICT(workspace_id,channel,account_ref,contact_ref)
    DO UPDATE SET contact_name=EXCLUDED.contact_name,cliente_id=COALESCE(socialmei.me_conversations.cliente_id,EXCLUDED.cliente_id),
    revision=socialmei.me_conversations.revision+1 RETURNING id,revision`,
    [wid,refs.channel,refs.account,refs.contact,contactName,refs.origin,customerId]);
   const conversationId=Number(conv.rows[0].id);
-  const old=await c.query(`SELECT m.id,m.fingerprint FROM socialmei.me_external_messages x JOIN socialmei.me_messages m
-   ON m.workspace_id=x.workspace_id AND m.id=x.message_id WHERE x.workspace_id=$1 AND x.channel=$2 AND x.account_ref=$3 AND x.external_message_id=$4`,
-   [wid,refs.channel,refs.account,externalId]);
-  if(old.rows.length){if(old.rows[0].fingerprint!==fingerprint)fail(409,"ID externo reutilizado com conteúdo diferente.","message_conflict");
-   return {accepted:true,duplicate:true,conversation_id:conversationId,message_id:Number(old.rows[0].id),customer_id:customerId};}
   const msg=await c.query(`INSERT INTO socialmei.me_messages(workspace_id,conversation_id,external_message_id,fingerprint,conversation_revision,text,occurred_at,origin)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
    [wid,conversationId,externalId,fingerprint,Number(conv.rows[0].revision),text,occurredAt.toISOString(),refs.origin]);
