@@ -838,8 +838,13 @@ fetch('https://socialmei.vercel.app/api/conversas')
         ]);
       });
       // Força a tela a atualizar os dados
-      if (typeof route === 'function') route(); 
-      else window.location.reload();
+      if (typeof route === 'function') {
+        route(); 
+      } else if (typeof render === 'function') {
+        render();
+      } else {
+        console.log('Dados carregados, mas a função de renderização não foi encontrada.');
+      }
     }
   })
   .catch(erro => console.error("Erro ao buscar conversas:", erro));
