@@ -822,9 +822,29 @@ const P={home:'M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10',chat:'M21 12a8 8 0 0 1-11.7 
 Object.assign(P,{pin:'M12 17v5M8 3h8l-1 6 3 4H6l3-4z',clock:'M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',mic:'M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zM6 11a6 6 0 0 0 12 0M12 17v4',tag:'M3 12V4h8l10 10-8 8zM7.5 8h.01',box:'M4 8l8-4 8 4v8l-8 4-8-4zM4 8l8 4 8-4M12 12v8'});
 const i=(n,s=18)=>`<svg class="i" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="${P[n]}"/></svg>`;
 const brl=n=>'R$ '+n.toFixed(2).replace('.',',');
-const C=[['lia','Lia (exemplo)','L','#e4dcff','#4a3aa8','Quero comprar o kit. Pode me explicar como pagar?','wa','Aberto','10:42'],['bruno','Bruno (exemplo)','B','#dbe8ff','#1d4fb8','Qual o valor do serviço?','wa','Aberto','10:30'],['bia','Bia (exemplo)','B','#fddede','#a62b2b','Oi, tenho uma dúvida.','wa','Aberto','10:12'],['ana','Ana (exemplo)','A','#dcf3df','#2a7a3a','Você atende na minha cidade?','ig','Aberto','Ontem'],['paulo','Paulo (exemplo)','P','#fdecc8','#8a5a00','Quero saber mais sobre os serviços.','wa','Aberto','Ontem'],['leo','Leo (exemplo)','L','#e4dcff','#4a3aa8','Obrigada pelo atendimento!','ig','Concluído','Seg']];
-const T1=[[0,'Olá! Vi o kit de cuidados na divulgação.','10:38'],[1,'Olá, Lia! Como posso ajudar?','10:40'],[0,'Quero comprar o kit. Pode me explicar como pagar?','10:42']];
-const T2=[[0,'Tenho interesse no kit de cuidados.','10:30'],[1,'O kit custa R$ 60 e pode ser retirado na loja.','10:32'],[0,'Pode separar um para mim? Prefiro pagar na retirada.','10:34'],[1,'Combinado, Lia. Vou separar um kit para você.','10:36'],[0,'Obrigada! Até que horas posso buscar?','10:42']];
+const C=[];
+// Busca as conversas reais do Neon
+fetch('https://socialmei.vercel.app/api/conversas')
+  .then(res => res.json())
+  .then(dados => {
+    if(dados && dados.length > 0) {
+      dados.forEach(c => {
+        const hora = new Date(c.atualizado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        C.push([
+          String(c.id), c.contato,
+          c.contato ? c.contato.substring(0,2).toUpperCase() : '??',
+          '#e4dcff', '#4a3aa8',
+          c.ultima_mensagem || 'Sem mensagens', 'wa', 'Aberto', hora
+        ]);
+      });
+      // Força a tela a atualizar os dados
+      if (typeof route === 'function') route(); 
+      else window.location.reload();
+    }
+  })
+  .catch(erro => console.error("Erro ao buscar conversas:", erro));
+const T1=[];
+const T2=[];
 const SUG='Lia, o kit está separado e o pagamento fica para a retirada, como combinamos. Vou confirmar nosso horário de atendimento para te orientar.';
 const RT=[['Lembrete de cobrança','Financeiro','Quando uma cobrança estiver perto do vencimento.','doc','#e3f5e8','#138a4a','Prepare um lembrete antes do vencimento.',['1 dia antes do vencimento','Lembrete para revisar','Pagamento antes de cobrar'],'Lembrete pronto para revisar: "Oi, Lia! Sua cobrança vence amanhã."'],['Conversa sem resposta','Atendimento','Quando uma conversa aguardar retorno.','chat','#e8f0ff','#0a5cf5','Avise quando um cliente ficar sem resposta.',['2 horas sem resposta','Aviso para você','Conversa antes de responder'],'Aviso: "Lia aguarda retorno há 2 horas."'],['Próxima etapa da venda','Vendas','Quando uma venda for concluída.','doc','#fff1d6','#b07800','Sugira o próximo passo depois de uma venda.',['Venda concluída','Sugestão de próximo passo','Venda antes de sugerir'],'Sugestão: "Enviar o recibo e combinar a retirada."'],['Retorno ao cliente','Clientes','Depois de uma compra registrada.','users','#efe8ff','#6a46d9','Prepare um retorno depois da compra.',['7 dias após a compra','Mensagem de retorno','Texto antes de usar'],'Mensagem: "Oi! Como foi sua experiência com o kit?"']];
 const V=[['#93001','Kit presente · 1 item','Lia (exemplo)','LI','23 out 2026','Pago',60],['#93002','Vela artesanal · 2 itens','Bruno (exemplo)','BR','21 out 2026','Pago',70],['#93003','Kit especial · 3 itens','Bia (exemplo)','BI','18 out 2026','Pendente',180]];
@@ -1354,4 +1374,42 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&S.mais){S.mais=fals
 <script src="config.js"></script>
 <script src="scripts/auth-store.js"></script>
 <script src="scripts/v22-bootstrap.js"></script>
+ <script>
+document.addEventListener('click', async (e) => {
+  const item = e.target.closest('.ci'); 
+  if (!item) return;
+  
+  const match = window.location.hash.match(/#\/caixa\/(\d+)/);
+  if (!match) return;
+  const conversa_id = match[1];
+
+  try {
+    const res = await fetch(`https://socialmei.vercel.app/api/historico?conversa_id=${conversa_id}`);
+    const dados = await res.json();
+    
+    // Se a variável T1 existir no escopo global, limpamos ela
+    if (typeof T1 !== 'undefined') {
+        T1.length = 0;
+        dados.mensagens.forEach(m => {
+           const tipo = m.direcao === 'entrada' ? 0 : 1; 
+           const hora = new Date(m.criado_em).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'});
+           T1.push([tipo, m.conteudo, hora]);
+        });
+    }
+
+    // Coloca o rascunho da IA na caixa de texto
+    if (dados.rascunho_ia) {
+       const textarea = document.querySelector('.cp textarea');
+       if (textarea) textarea.value = dados.rascunho_ia.conteudo;
+    }
+
+    // Manda a tela redesenhar
+    if (typeof render === 'function') render();
+    else if (typeof route === 'function') route();
+    
+  } catch (err) {
+    console.error("Erro ao buscar histórico:", err);
+  }
+});
+</script>
 </body></html>
