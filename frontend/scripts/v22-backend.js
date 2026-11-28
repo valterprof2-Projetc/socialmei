@@ -52,6 +52,40 @@ window.SocialMEIV22 = (() => {
     const [clients, products, sales, finance] = await Promise.all(
       ["/clientes", "/produtos", "/vendas", "/financeiro"].map((p) => request(p)),
     );
+    // --- INÍCIO DA CORREÇÃO PARA DADOS REAIS ---
+try {
+  // 1. Busca as conversas da sua API no Neon
+  const respostaConversas = await fetch('https://socialmei.vercel.app/api/conversas');
+  const conversasReais = await respostaConversas.json();
+
+  // 2. Converte o formato da API para o formato que o frontend espera
+  // A API retorna: { id, contato, ultima_mensagem, atualizado_em }
+  // O frontend espera: { id, nome, canal, mensagens: [], ... }
+  const conversasFormatadas = conversasReais.map(c => ({
+    id: c.id,
+    nome: c.contato,
+    iniciais: c.contato ? c.contato.substring(0, 2).toUpperCase() : '??',
+    canal: 'whatsapp', // fixo por enquanto
+    status: 'aberto',   // fixo por enquanto
+    atualizado: new Date(c.atualizado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+    naoLidas: 0,
+    mensagens: c.ultima_mensagem ? [{
+      de: 'cliente',
+      texto: c.ultima_mensagem,
+      hora: new Date(c.atualizado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+    }] : []
+  }));
+
+  // 3. Substitui os dados de exemplo pelos dados reais
+  // A variável sessionData é global e acessível a partir daqui
+  if (window.sessionData) {
+    window.sessionData.conversas = conversasFormatadas;
+    console.log('✅ Conversas reais carregadas do Neon:', conversasFormatadas.length);
+  }
+} catch (erro) {
+  console.error('❌ Erro ao buscar conversas do Neon:', erro);
+}
+// --- FIM DA CORREÇÃO ---
     if (!auth.current || identityKey() !== expectedScope)
       throw Error("Sua sessão mudou. Atualize os dados do negócio atual.");
     if (![clients, products, sales, finance].every(Array.isArray))
